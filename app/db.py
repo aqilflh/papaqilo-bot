@@ -436,12 +436,20 @@ def claim_schedule_run(user_id: int, kind: str, run_date: str) -> bool:
     return won
 
 
-def mark_schedule_run(user_id: int, kind: str, run_date: str) -> None:
-    """Record a run without the enabled check (used to record a failure)."""
+def release_schedule_claim(user_id: int, kind: str, run_date: str) -> None:
+    """Undo a claim so a failed run can be retried.
+
+    run_date must be the same value that was claimed, which is the date in the
+    user's timezone, not UTC. Only clears when the column already holds that
+    date, so a concurrent successful run is never rolled back.
+    """
     with _cursor() as cur:
         cur.execute(
-            "UPDATE schedules SET last_run_date = ? WHERE user_id = ? AND kind = ?",
-            (run_date, user_id, kind),
+            """
+            UPDATE schedules SET last_run_date = NULL
+            WHERE user_id = ? AND kind = ? AND last_run_date = ?
+            """,
+            (user_id, kind, run_date),
         )
 
 

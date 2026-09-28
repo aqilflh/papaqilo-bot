@@ -105,7 +105,10 @@ def load_config() -> Config:
     cfg = Config(
         deepseek_api_key=_require("DEEPSEEK_API_KEY"),
         deepseek_base_url=_str("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        deepseek_model=_str("DEEPSEEK_MODEL", "deepseek-flash"),
+        # Required, not defaulted: DeepSeek renamed its model ids recently
+        # (deepseek-chat / deepseek-reasoner are gone). Making this explicit
+        # forces a conscious choice instead of a silent stale default.
+        deepseek_model=_require("DEEPSEEK_MODEL"),
         deepseek_thinking=_bool("DEEPSEEK_THINKING", False),
         telegram_bot_token=_require("TELEGRAM_BOT_TOKEN"),
         owner_telegram_id=owner_id,
