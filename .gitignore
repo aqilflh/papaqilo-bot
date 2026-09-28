@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Runtime data: sqlite file, WAL sidecars, and daily backups
+data/
+
+# Local dev environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

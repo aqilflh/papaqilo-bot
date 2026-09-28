@@ -1,0 +1,19 @@
+# Keep the build context small and never let secrets reach an image layer.
+.git
+.gitignore
+.env
+data/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+tests/
+docs/
+README.md
+Dockerfile
+docker-compose.yml
+requirements-dev.txt
+pytest.ini
+.ruff.toml

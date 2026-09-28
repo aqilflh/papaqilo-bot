@@ -1,0 +1,31 @@
+services:
+  agent:
+    build:
+      context: .
+      args:
+        # The container user must share a uid with the host user that owns
+        # ./data, otherwise the bind mount is read-only from the inside.
+        APP_UID: "${APP_UID:-1000}"
+        APP_GID: "${APP_GID:-1000}"
+    image: tg-agent:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Redundant with .env on purpose: the container needs its own TZ for the
+      # scheduler, and python's zoneinfo reads TZ when no /etc/localtime exists.
+      TZ: ${TZ:-Asia/Jakarta}
+    volumes:
+      # The sqlite file and daily backups live here. ./data must be writable by
+      # APP_UID, which is the host user running compose.
+      - ./data:/app/data
+    # No `ports:` — the bot uses long polling and never listens on a socket.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

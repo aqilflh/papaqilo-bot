@@ -1,0 +1,20 @@
+[project]
+name = "tg-agent"
+version = "0.1.0"
+description = "Personal AI agent as a Telegram bot"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+ignore = [
+    "B008",  # function call in default arg: fine for FastAPI-style deps we do not use
+    "SIM108", # ternary is not always clearer than an if/else
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use asserts freely and shadow names on purpose.
+"tests/*" = ["E501"]

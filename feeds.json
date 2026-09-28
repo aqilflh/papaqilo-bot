@@ -1,0 +1,24 @@
+{
+  "feeds": [
+    {
+      "name": "Hacker News",
+      "url": "https://hnrss.org/frontpage",
+      "lang": "en"
+    },
+    {
+      "name": "Antara News",
+      "url": "https://www.antaranews.com/rss/terkini.xml",
+      "lang": "id"
+    },
+    {
+      "name": "BBC Indonesia",
+      "url": "https://www.bbc.com/indonesian/index.xml",
+      "lang": "id"
+    },
+    {
+      "name": "CNBC Indonesia",
+      "url": "https://www.cnbcindonesia.com/rss",
+      "lang": "id"
+    }
+  ]
+}
