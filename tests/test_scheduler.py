@@ -302,10 +302,7 @@ def test_backup_not_repeated_on_the_same_day(conn, monkeypatch, tmp_path):
     monkeypatch.setattr("app.backup.run_backup", record)
     first = datetime(2026, 9, 28, 3, 5)
     assert run_backup_if_due(tmp_path / "a.db", now=first) is True
-    assert (
-        run_backup_if_due(tmp_path / "a.db", now=datetime(2026, 9, 28, 9, 0), last_run=first)
-        is False
-    )
+    assert run_backup_if_due(tmp_path / "a.db", now=datetime(2026, 9, 28, 9, 0), last_run=first) is False
     assert len(calls) == 1
 
 

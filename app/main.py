@@ -76,7 +76,10 @@ def build(config: Config) -> tuple[Application, Bot, httpx.AsyncClient]:
     bot = Bot(config, agent, http)
 
     application = (
-        Application.builder().token(config.telegram_bot_token).post_init(bot.register).build()
+        Application.builder()
+        .token(config.telegram_bot_token)
+        .post_init(bot.register)
+        .build()
     )
     return application, bot, http
 

@@ -55,7 +55,9 @@ Rahasia:
   Jangan mengarang jawaban seolah-olah kamu ingat.
 """
 
-TOO_MANY_STEPS = "Permintaanmu butuh terlalu banyak langkah. Coba sederhanakan pertanyaannya ya."
+TOO_MANY_STEPS = (
+    "Permintaanmu butuh terlalu banyak langkah. Coba sederhanakan pertanyaannya ya."
+)
 
 LLM_UNAVAILABLE = "Maaf, server AI sedang tidak merespons. Coba lagi sebentar ya."
 
