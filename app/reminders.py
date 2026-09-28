@@ -62,9 +62,7 @@ def format_reminder(reminder: dict[str, Any], tz: ZoneInfo) -> str:
     return f"#{reminder['id']} - {reminder['text']} ({repeat}, {due.strftime('%d/%m %H:%M')})"
 
 
-def next_occurrence(
-    reminder: dict[str, Any], tz: ZoneInfo, now: datetime
-) -> datetime | None:
+def next_occurrence(reminder: dict[str, Any], tz: ZoneInfo, now: datetime) -> datetime | None:
     """The next time this reminder should fire, or None if it is finished.
 
     Always returns something strictly after `now`, which is what makes a missed
@@ -172,9 +170,7 @@ async def deliver_due(sender: Any, now: datetime | None = None) -> int:
     return sent
 
 
-def reminder_message(
-    reminder: dict[str, Any], tz: ZoneInfo, overdue: timedelta
-) -> str:
+def reminder_message(reminder: dict[str, Any], tz: ZoneInfo, overdue: timedelta) -> str:
     """The message body. Says how late it is so a catch-up is never confusing."""
     if overdue >= timedelta(minutes=1):
         late = f" (terlambat {int(overdue.total_seconds() // 60)} menit)"

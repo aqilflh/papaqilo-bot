@@ -213,7 +213,9 @@ async def test_tool_error_is_fed_back_not_raised(conn):
             FakeMessage(
                 content=None,
                 tool_calls=[
-                    FakeCall(id="c1", function=FakeFunction(name="get_news", arguments='{"limit": 5}'))
+                    FakeCall(
+                        id="c1", function=FakeFunction(name="get_news", arguments='{"limit": 5}')
+                    )
                 ],
             )
         ),
