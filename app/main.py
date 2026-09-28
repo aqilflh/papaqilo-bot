@@ -75,9 +75,14 @@ def build(config: Config) -> tuple[Application, Bot, httpx.AsyncClient]:
     agent = Agent(config, http, feeds)
     bot = Bot(config, agent, http)
 
-    application = (
-        Application.builder().token(config.telegram_bot_token).post_init(bot.register).build()
-    )
+    application = Application.builder().token(config.telegram_bot_token).build()
+    # Register handlers here, not via post_init. PTB only invokes post_init from
+    # inside run_polling(), and this app drives the lifecycle by hand
+    # (initialize + start + updater.start_polling) so it can handle SIGTERM
+    # cleanly. With post_init, handlers were never registered: the poller
+    # consumed every update and dispatched it to nothing, so the bot answered
+    # nobody while looking perfectly healthy.
+    bot.register(application)
     return application, bot, http
 
 
@@ -103,6 +108,9 @@ async def run(config: Config) -> None:
         model=config.deepseek_model,
         thinking=config.deepseek_thinking,
         owner_id=config.owner_telegram_id,
+        # Logged so a missing registration is visible in the boot log instead
+        # of showing up as a bot that silently ignores every message.
+        handlers=sum(len(handlers) for handlers in application.handlers.values()),
     )
 
     stop = asyncio.Event()
