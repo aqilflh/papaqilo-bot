@@ -122,7 +122,33 @@ async def run(config: Config) -> None:
         await application.start()
         await application.updater.start_polling(drop_pending_updates=True)
         log_event(log, logging.INFO, "polling_started")
-        await stop.wait()
+
+        # Telegram kills the poller, rather than the process, when a second
+        # instance polls the same token. The container would sit there "Up"
+        # and deaf, which is indistinguishable from the bot ignoring messages.
+        # Watch the poller task and exit so restart policy brings up one clean
+        # instance instead of leaving a zombie holding the token.
+        async def _watch_poller() -> None:
+            while not stop.is_set():
+                await asyncio.sleep(15)
+                if application.updater._polling_task is None:
+                    break
+                if application.updater._polling_task.done():
+                    exc = application.updater._polling_task.exception()
+                    log_event(
+                        log,
+                        logging.CRITICAL,
+                        "poller_died",
+                        error=type(exc).__name__ if exc else "cancelled",
+                    )
+                    stop.set()
+                    return
+
+        watcher = asyncio.create_task(_watch_poller())
+        try:
+            await stop.wait()
+        finally:
+            watcher.cancel()
     finally:
         log_event(log, logging.INFO, "shutting_down")
         await application.updater.stop()

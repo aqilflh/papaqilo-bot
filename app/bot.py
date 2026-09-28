@@ -13,7 +13,7 @@ from typing import Any
 
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.error import TelegramError
+from telegram.error import Conflict, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app import db
@@ -369,7 +369,14 @@ class Bot:
         await self._reply(update, result.text)
 
     async def on_error(self, update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        """Swallow library-level errors so polling keeps running."""
+        """Swallow library-level errors so polling keeps running.
+
+        `Conflict` means a second poller is running against the same token;
+        Telegram kills this one. The process is alive but deaf, which looks
+        exactly like "the bot ignores me" from the outside. The only cure is to
+        stop the other poller, so say so loudly in the log and let
+        `restart: unless-stopped` bring us back clean.
+        """
         exc = getattr(ctx, "error", None)
         log_event(
             log,
@@ -377,3 +384,12 @@ class Bot:
             "telegram_error",
             error=type(exc).__name__ if exc else "unknown",
         )
+        if isinstance(exc, Conflict):
+            log_event(
+                log,
+                logging.CRITICAL,
+                "polling_conflict",
+                detail="A second bot instance is polling this token. "
+                "This process is now deaf until it is restarted. "
+                "Run `docker compose ps` and stop the other instance.",
+            )
