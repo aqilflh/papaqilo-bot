@@ -458,7 +458,9 @@ def disable_all_reminders(user_id: int) -> int:
     user wipe everyone's reminders.
     """
     with _cursor() as cur:
-        cur.execute("UPDATE reminders SET active = 0 WHERE user_id = ? AND active = 1", (user_id,))
+        cur.execute(
+            "UPDATE reminders SET active = 0 WHERE user_id = ? AND active = 1", (user_id,)
+        )
         return cur.rowcount
 
 

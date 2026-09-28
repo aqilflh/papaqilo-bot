@@ -20,6 +20,7 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "123456:test")
 os.environ.setdefault("OWNER_TELEGRAM_ID", "100")
 
 from app import main as main_mod  # noqa: E402
+from app.bot import Bot  # noqa: E402
 from app.config import load_config  # noqa: E402
 
 

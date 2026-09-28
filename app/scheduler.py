@@ -68,7 +68,9 @@ def is_due(schedule: dict[str, Any], tz: ZoneInfo, now: datetime) -> bool:
     return minutes_now >= target[0] * 60 + target[1]
 
 
-async def run_recaps(sender: Sender, agent: Any, http: Any, now: datetime | None = None) -> int:
+async def run_recaps(
+    sender: Sender, agent: Any, http: Any, now: datetime | None = None
+) -> int:
     """Deliver every due recap. Returns how many were sent."""
     now = now or datetime.now(ZoneInfo("UTC"))
     sent = 0

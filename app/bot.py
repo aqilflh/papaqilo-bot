@@ -14,7 +14,7 @@ from typing import Any
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict, TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, ContextTypes, MessageHandler, CommandHandler, filters
 
 from app import db
 from app.agent import Agent, run_and_store, user_zone
@@ -152,7 +152,9 @@ class Bot:
         application.add_handler(CommandHandler("removeuser", self.cmd_removeuser))
         application.add_handler(CommandHandler("users", self.cmd_users))
         # Must stay last: it catches every non-command text message.
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
+        application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text)
+        )
 
         application.add_error_handler(self.on_error)
 
@@ -265,7 +267,7 @@ class Bot:
             await self._reply(
                 update,
                 "Belum ada pengingat aktif. Bilang aja, misalnya "
-                '"ingetin aku besok jam 9 pagi meeting".',
+                "\"ingetin aku besok jam 9 pagi meeting\".",
             )
             return
         user = db.get_user(user_id) or {}
@@ -292,7 +294,9 @@ class Bot:
         if db.disable_reminder(reminder_id, update.effective_user.id):
             await self._reply(update, f"Pengingat #{reminder_id} dimatikan.")
         else:
-            await self._reply(update, f"Tidak ada pengingat aktif #{reminder_id} milik lo.")
+            await self._reply(
+                update, f"Tidak ada pengingat aktif #{reminder_id} milik lo."
+            )
 
     async def cmd_usage(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
@@ -394,7 +398,9 @@ class Bot:
 
         await update.effective_chat.send_action(ChatAction.TYPING)
         try:
-            result = await run_and_store(self.agent, user_id, text, owner=self._is_owner(user_id))
+            result = await run_and_store(
+                self.agent, user_id, text, owner=self._is_owner(user_id)
+            )
         except Exception as exc:  # noqa: BLE001 - a handler must never kill the process
             log_event(
                 log, logging.ERROR, "agent_crashed", user_id=user_id, error=type(exc).__name__

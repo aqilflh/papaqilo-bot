@@ -72,7 +72,9 @@ def test_tool_definitions_are_stable_for_the_cache_prefix():
 def test_owner_only_tools_are_hidden_from_non_owners():
     for tool in TOOLS:
         if tool.owner_only:
-            assert tool.name not in {d["function"]["name"] for d in tool_definitions(owner=False)}
+            assert tool.name not in {
+                d["function"]["name"] for d in tool_definitions(owner=False)
+            }
 
 
 def test_tool_names_are_unique():
@@ -334,7 +336,8 @@ def test_load_feeds_drops_entries_without_a_url(tmp_path):
 def _rss(items: list[tuple[str, str, str]]) -> str:
     """Build a minimal RSS document from (title, link, pubDate) triples."""
     entries = "".join(
-        f"<item><title>{title}</title><link>{link}</link><pubDate>{published}</pubDate></item>"
+        f"<item><title>{title}</title><link>{link}</link>"
+        f"<pubDate>{published}</pubDate></item>"
         for title, link, published in items
     )
     return f'<?xml version="1.0"?><rss version="2.0"><channel>{entries}</channel></rss>'
@@ -413,9 +416,7 @@ async def test_one_broken_feed_does_not_sink_the_others():
     def handler(request: httpx.Request) -> httpx.Response:
         if str(request.url) == FEED_A:
             return httpx.Response(503)
-        return httpx.Response(
-            200, text=_rss([("B1", "http://b/1", "Mon, 28 Sep 2026 10:00:00 +0700")])
-        )
+        return httpx.Response(200, text=_rss([("B1", "http://b/1", "Mon, 28 Sep 2026 10:00:00 +0700")]))
 
     ctx = ToolContext(
         user_id=7,
