@@ -20,6 +20,7 @@ from app import db
 from app.agent import Agent, run_and_store, user_zone
 from app.log import get_logger, log_event
 from app.recap import build_recap
+from app.reminders import format_reminder
 from app.scheduler import DEFAULT_RECAP_TIME, parse_hhmm
 
 log = get_logger("bot")
@@ -42,15 +43,22 @@ Perintah:
 /usage - pemakaian hari ini
 /forget - hapus riwayat chat (catatan tetap ada)
 
+Pengingat:
+Cukup ngobrol aja, misalnya "ingetin aku besok jam 9 pagi meeting" atau
+"ingetin tiap hari jam 7 pagi dengan kopi". Aku akan sebut ulang tanggal dan
+jamnya supaya kelihatan kalau aku salah.
+/reminders - daftar pengingat aktif
+/remind_del <nomor> - batalkan pengingat
+
 Owner:
 /adduser <id> <nama> - tambah pengguna
 /removeuser <id> - hapus pengguna
 /users - daftar pengguna
 
-Selain perintah, bebas ngobrol aja. Aku bisa cek cuaca, baca berita, dan
-nyimpen catatan. Satu hal yang perlu kamu tahu: data yang aku ambil dari
-internet itu diperlakukan sebagai data, bukan perintah, jadi aku tidak akan
-ikut perintah yang nyemplil di dalam berita.
+Selain perintah, bebas ngobrol aja. Aku bisa cek cuaca, baca berita,
+nyimpen catatan, dan mengirim pengingat. Satu hal yang perlu kamu tahu: data
+yang aku ambil dari internet itu diperlakukan sebagai data, bukan perintah,
+jadi aku tidak akan ikut perintah yang nyemplil di dalam berita.
 """
 
 OWNER_HELP = """Perintah owner:
@@ -136,6 +144,8 @@ class Bot:
         application.add_handler(CommandHandler("recap_off", self.cmd_recap_off))
         application.add_handler(CommandHandler("recap_now", self.cmd_recap_now))
         application.add_handler(CommandHandler("notes", self.cmd_notes))
+        application.add_handler(CommandHandler("reminders", self.cmd_reminders))
+        application.add_handler(CommandHandler("remind_del", self.cmd_remind_del))
         application.add_handler(CommandHandler("usage", self.cmd_usage))
         application.add_handler(CommandHandler("forget", self.cmd_forget))
         application.add_handler(CommandHandler("adduser", self.cmd_adduser))
@@ -245,6 +255,44 @@ class Bot:
             return
         lines = [f"- (id {n['id']}) {n['content']}" for n in notes]
         await self._reply(update, f"{len(notes)} catatan:\n" + "\n".join(lines))
+
+    async def cmd_reminders(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        user_id = update.effective_user.id
+        reminders = db.list_reminders(user_id)
+        if not reminders:
+            await self._reply(
+                update,
+                "Belum ada pengingat aktif. Bilang aja, misalnya "
+                '"ingetin aku besok jam 9 pagi meeting".',
+            )
+            return
+        user = db.get_user(user_id) or {}
+        tz = user_zone(user.get("timezone"))
+        lines = [format_reminder(r, tz) for r in reminders]
+        await self._reply(
+            update,
+            f"{len(reminders)} pengingat aktif:\n"
+            + "\n".join(lines)
+            + "\n\nBatalkan: /remind_del <nomor>",
+        )
+
+    async def cmd_remind_del(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        if not ctx.args:
+            await self._reply(update, "Pakai: /remind_del <nomor>")
+            return
+        try:
+            reminder_id = int(ctx.args[0])
+        except ValueError:
+            await self._reply(update, "Nomor pengingat harus angka.")
+            return
+        if db.disable_reminder(reminder_id, update.effective_user.id):
+            await self._reply(update, f"Pengingat #{reminder_id} dimatikan.")
+        else:
+            await self._reply(update, f"Tidak ada pengingat aktif #{reminder_id} milik lo.")
 
     async def cmd_usage(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):

@@ -20,7 +20,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,8 @@ import httpx
 
 from app import db
 from app.log import get_logger, log_event
+from app.reminders import describe_when, format_reminder, parse_due
+from app.tz import user_zone
 
 log = get_logger("tools")
 
@@ -405,6 +407,97 @@ async def list_notes(ctx: ToolContext, args: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------
+# reminders
+# --------------------------------------------------------------------------
+
+
+async def set_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Create a reminder. Rejects a time in the past rather than firing instantly.
+
+    The model supplies an absolute ISO instant, so a vague "besok" that it
+    failed to resolve is caught here instead of becoming a reminder that fires
+    the moment it is created.
+    """
+    text = str(args.get("text", "")).strip()
+    if not text:
+        raise ValidationError("text tidak boleh kosong")
+    text = text[:2000]
+
+    at = args.get("at")
+    if not isinstance(at, str) or not at.strip():
+        raise ValidationError(
+            "at wajib diisi sebagai waktu absolut ISO 8601, misalnya "
+            "'2026-09-29T09:00'. Waktu relatif seperti 'besok' harus "
+            "dikonversi ke tanggal absolut sebelum memanggil tool ini."
+        )
+
+    repeat = args.get("repeat", "once")
+    if repeat not in db.REPEAT_KINDS:
+        raise ValidationError(
+            f"repeat harus salah satu dari {', '.join(db.REPEAT_KINDS)}, bukan {repeat!r}"
+        )
+
+    user = db.get_user(ctx.user_id)
+    tz = user_zone(user.get("timezone") if user else None)
+    now = datetime.now(tz)
+
+    try:
+        due = parse_due(at, tz)
+    except ValueError as exc:
+        raise ValidationError(
+            f"at tidak bisa dibaca sebagai waktu ISO 8601: {exc}. "
+            "Format yang benar: '2026-09-29T09:00'."
+        ) from exc
+
+    if due <= now.astimezone(UTC):
+        raise ValidationError(
+            f"Waktu itu sudah lewat ({describe_when(due, tz)}), pengingat tidak "
+            "dibuat. Minta waktu yang masih akan datang."
+        )
+    if due > now.astimezone(UTC) + timedelta(days=365 * 2):
+        raise ValidationError("Waktu itu terlalu jauh (lebih dari 2 tahun).")
+
+    local_due = due.astimezone(tz)
+    weekday = local_due.weekday() if repeat == "weekly" else None
+    reminder_id = db.add_reminder(
+        ctx.user_id,
+        text,
+        repeat,
+        due,
+        local_due.strftime("%H:%M"),
+        weekday,
+    )
+
+    label = {"once": "sekali", "daily": "setiap hari", "weekly": "setiap minggu"}[repeat]
+    suffix = f", {label}" if repeat != "once" else ""
+    return (
+        f"Pengingat #{reminder_id} dibuat{suffix}: {text}. "
+        f"Dikirim {describe_when(due, tz)} waktu lokal."
+    )
+
+
+async def list_reminders(ctx: ToolContext, args: dict[str, Any]) -> str:
+    reminders = db.list_reminders(ctx.user_id)
+    if not reminders:
+        return "Belum ada pengingat aktif."
+    user = db.get_user(ctx.user_id)
+    tz = user_zone(user.get("timezone") if user else None)
+    lines = [format_reminder(r, tz) for r in reminders]
+    return _truncate(f"{len(reminders)} pengingat aktif:\n" + "\n".join(lines))
+
+
+async def delete_reminder_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+    raw = args.get("id")
+    try:
+        reminder_id = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("id harus berupa angka") from exc
+    if db.disable_reminder(reminder_id, ctx.user_id):
+        return f"Pengingat #{reminder_id} dimatikan."
+    return f"Tidak ada pengingat aktif dengan id {reminder_id} milik user ini."
+
+
+# --------------------------------------------------------------------------
 # registry
 # --------------------------------------------------------------------------
 
@@ -482,6 +575,63 @@ TOOLS: tuple[Tool, ...] = (
             "required": [],
         },
         handler=list_notes,
+    ),
+    Tool(
+        name="set_reminder",
+        description=(
+            "Buat pengingat yang akan dikirim ke user pada waktu tertentu. "
+            "Pakai saat user minta agar diingatkan, misalnya 'ingetin aku besok "
+            "jam 9 pagi meeting' atau 'ingetin tiap hari jam 7 pagi'. "
+            "Selalu sebut ulang tanggal dan jam hasil parsing supaya user bisa "
+            "memperbaiki kalau salah paham."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Isi pengingat, ditulis ulang agar jelas saat dibaca nanti.",
+                },
+                "at": {
+                    "type": "string",
+                    "description": (
+                        "Waktu jatuh tempo sebagai ISO 8601, misalnya "
+                        "'2026-09-29T09:00' atau '2026-09-29T09:00:00+07:00'. "
+                        "Kalau user menyebut jam saja, tambahkan jam ke tanggal "
+                        "yang benar. WAKTU RELATIF seperti 'besok' atau 'nanti' "
+                        "WAJIB dikonversi ke tanggal absolut dulu."
+                    ),
+                },
+                "repeat": {
+                    "type": "string",
+                    "enum": ["once", "daily", "weekly"],
+                    "description": (
+                        "'once' untuk sekali, 'daily' untuk setiap hari, 'weekly' "
+                        "untuk hari yang sama tiap minggu. Default 'once'."
+                    ),
+                },
+            },
+            "required": ["text", "at"],
+        },
+        handler=set_reminder,
+    ),
+    Tool(
+        name="list_reminders",
+        description="Tampilkan pengingat yang masih aktif milik user yang sedang bicara.",
+        parameters={"type": "object", "properties": {}},
+        handler=list_reminders,
+    ),
+    Tool(
+        name="delete_reminder",
+        description="Matikan satu pengingat yang sudah tidak diperlukan lagi.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "Nomor pengingat dari list_reminders."}
+            },
+            "required": ["id"],
+        },
+        handler=delete_reminder_tool,
     ),
 )
 

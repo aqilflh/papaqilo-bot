@@ -80,8 +80,26 @@ CREATE TABLE usage (
 );
 """
 
+_MIGRATION_2 = """
+CREATE TABLE reminders (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  text         TEXT NOT NULL,                 -- what to remind about
+  repeat_kind  TEXT NOT NULL DEFAULT 'once',  -- 'once' | 'daily' | 'weekly'
+  due_at       TEXT NOT NULL,                 -- ISO 8601 UTC, next occurrence
+  local_hhmm   TEXT NOT NULL,                 -- 'HH:MM' in the user's timezone
+  weekday      INTEGER,                       -- 0=Mon..6=Sun, weekly only
+  active       INTEGER NOT NULL DEFAULT 1,
+  last_sent_at TEXT,                          -- ISO 8601 UTC of last delivery
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+-- The delivery query is "active AND due_at <= now, oldest first".
+CREATE INDEX idx_reminders_due ON reminders(active, due_at);
+CREATE INDEX idx_reminders_user ON reminders(user_id, id);
+"""
+
 # Each entry is (target_user_version, sql). Append only; never edit a shipped one.
-MIGRATIONS: Sequence[tuple[int, str]] = ((1, _MIGRATION_1),)
+MIGRATIONS: Sequence[tuple[int, str]] = ((1, _MIGRATION_1), (2, _MIGRATION_2))
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
 
@@ -348,6 +366,139 @@ def delete_note(user_id: int, note_id: int) -> bool:
 def _escape_like(text: str) -> str:
     """Escape LIKE wildcards so a user searching '100%' does not match everything."""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# --------------------------------------------------------------------------
+# reminders
+# --------------------------------------------------------------------------
+
+REPEAT_KINDS = ("once", "daily", "weekly")
+
+
+def add_reminder(
+    user_id: int,
+    text: str,
+    repeat_kind: str,
+    due_at: datetime,
+    local_hhmm: str,
+    weekday: int | None = None,
+) -> int:
+    """Store a reminder. `due_at` is UTC; the local fields drive recurrence.
+
+    Store UTC for delivery but keep the user's wall-clock time, otherwise a
+    daily 07:00 WIB reminder would drift by the UTC offset once a DST-shifting
+    zone is involved.
+    """
+    if repeat_kind not in REPEAT_KINDS:
+        raise ValueError(f"repeat_kind must be one of {REPEAT_KINDS}, got {repeat_kind!r}")
+    with _cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO reminders (user_id, text, repeat_kind, due_at, local_hhmm, weekday)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                text,
+                repeat_kind,
+                due_at.astimezone(UTC).isoformat(timespec="seconds"),
+                local_hhmm,
+                weekday,
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def list_reminders(user_id: int, active_only: bool = True) -> list[dict[str, Any]]:
+    """This user's reminders, soonest due first."""
+    sql = "SELECT * FROM reminders WHERE user_id = ?"
+    if active_only:
+        sql += " AND active = 1"
+    sql += " ORDER BY due_at ASC, id ASC"
+    with _cursor() as cur:
+        rows = cur.execute(sql, (user_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_reminder(reminder_id: int, user_id: int | None = None) -> dict[str, Any] | None:
+    """One reminder by id, optionally scoped to an owner so users cannot read
+    each other's rows."""
+    sql = "SELECT * FROM reminders WHERE id = ?"
+    params: tuple[Any, ...] = (reminder_id,)
+    if user_id is not None:
+        sql += " AND user_id = ?"
+        params = (reminder_id, user_id)
+    with _cursor() as cur:
+        row = cur.execute(sql, params).fetchone()
+    return _row_to_dict(row)
+
+
+def disable_reminder(reminder_id: int, user_id: int | None = None) -> bool:
+    """Stop a reminder without deleting history. False if not found or not theirs."""
+    sql = "UPDATE reminders SET active = 0 WHERE id = ? AND active = 1"
+    params: tuple[Any, ...] = (reminder_id,)
+    if user_id is not None:
+        sql += " AND user_id = ?"
+        params = (reminder_id, user_id)
+    with _cursor() as cur:
+        cur.execute(sql, params)
+        return cur.rowcount > 0
+
+
+def delete_reminder(reminder_id: int, user_id: int) -> bool:
+    with _cursor() as cur:
+        cur.execute("DELETE FROM reminders WHERE id = ? AND user_id = ?", (reminder_id, user_id))
+        return cur.rowcount > 0
+
+
+def claim_due_reminders(now: datetime) -> list[dict[str, Any]]:
+    """Claim every reminder whose due_at has passed and return them.
+
+    Marks `last_sent_at` inside the same transaction as the read, so two ticks
+    racing cannot both deliver the same reminder. Advancing the recurrence is
+    the caller's job, and it must happen even if sending later fails, otherwise
+    a Telegram outage would replay yesterday's reminder forever.
+    """
+    stamp = now.astimezone(UTC).isoformat(timespec="seconds")
+    with _transaction() as cur:
+        rows = cur.execute(
+            """
+            SELECT * FROM reminders
+            WHERE active = 1 AND due_at <= ?
+              AND (last_sent_at IS NULL OR last_sent_at != ?)
+            ORDER BY due_at ASC, id ASC
+            """,
+            (stamp, stamp),
+        ).fetchall()
+        claimed = [dict(r) for r in rows]
+        if claimed:
+            cur.executemany(
+                "UPDATE reminders SET last_sent_at = ? WHERE id = ?",
+                [(stamp, r["id"]) for r in claimed],
+            )
+    # Hand back the stamp we just wrote, not the pre-update value, so the
+    # caller can pass it to release_reminder_claim on a send failure.
+    for item in claimed:
+        item["last_sent_at"] = stamp
+    return claimed
+
+
+def advance_reminder(reminder_id: int, due_at: datetime) -> None:
+    """Move a reminder to its next occurrence after delivery."""
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE reminders SET due_at = ? WHERE id = ?",
+            (due_at.astimezone(UTC).isoformat(timespec="seconds"), reminder_id),
+        )
+
+
+def release_reminder_claim(reminder_id: int, sent_at: str) -> None:
+    """Undo a claim when delivery failed, so the next tick retries."""
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE reminders SET last_sent_at = NULL WHERE id = ? AND last_sent_at = ?",
+            (reminder_id, sent_at),
+        )
 
 
 # --------------------------------------------------------------------------

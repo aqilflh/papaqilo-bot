@@ -22,6 +22,7 @@ from app.agent import Agent
 from app.bot import Bot
 from app.config import Config, ConfigError, load_config
 from app.log import get_logger, log_event, setup_logging
+from app.reminders import deliver_due
 from app.scheduler import TICK_SECONDS, run_backup_if_due, run_recaps
 from app.tools import load_feeds
 
@@ -51,6 +52,13 @@ async def tick(bot: Bot) -> None:
             log_event(log, logging.INFO, "tick_recaps", sent=sent)
     except Exception as exc:  # noqa: BLE001 - the job must survive anything
         log_event(log, logging.ERROR, "tick_recaps_failed", error=type(exc).__name__)
+
+    try:
+        reminded = await deliver_due(bot, now=now)
+        if reminded:
+            log_event(log, logging.INFO, "tick_reminders", sent=reminded)
+    except Exception as exc:  # noqa: BLE001
+        log_event(log, logging.ERROR, "tick_reminders_failed", error=type(exc).__name__)
 
     try:
         if run_backup_if_due(bot.config.db_path, now=now, last_run=bot.last_backup):
