@@ -299,6 +299,32 @@ def test_disabled_reminder_is_never_delivered():
     assert sender.sent == []
 
 
+def test_bulk_disable_only_touches_the_requesting_user():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    _once("bungkus", now + timedelta(days=1))
+    _once("sarapan", now + timedelta(days=2))
+    _once("punya yang lain", now + timedelta(days=3))
+    db.add_reminder(OTHER, "jangan tersentuh", "once", now + timedelta(days=4), "10:00")
+
+    assert db.disable_all_reminders(OWNER) == 3
+    assert db.list_reminders(OWNER) == []
+    assert len(db.list_reminders(OTHER)) == 1
+
+
+def test_bulk_disable_reports_zero_when_nothing_active():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    _once("sudah selesai", now + timedelta(days=1))
+    db.disable_all_reminders(OWNER)
+    assert db.disable_all_reminders(OWNER) == 0
+
+
+def test_bulk_disable_does_not_resurrect_an_inactive_reminder():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    reminder_id = _once("lama", now + timedelta(days=1))
+    db.disable_reminder(reminder_id, OWNER)
+    assert db.disable_all_reminders(OWNER) == 0
+
+
 def test_add_reminder_rejects_an_unknown_repeat_kind():
     now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
     with pytest.raises(ValueError):

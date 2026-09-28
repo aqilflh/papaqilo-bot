@@ -497,6 +497,18 @@ async def delete_reminder_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
     return f"Tidak ada pengingat aktif dengan id {reminder_id} milik user ini."
 
 
+async def delete_all_reminders(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Cancel every active reminder for this user.
+
+    Scoped by user_id, so one user can never clear another's list.
+    """
+    count = db.disable_all_reminders(ctx.user_id)
+    if count == 0:
+        return "Tidak ada pengingat aktif untuk dihapus."
+    noun = "pengingat" if count == 1 else "pengingat"
+    return f"{count} {noun} aktif dimatikan."
+
+
 # --------------------------------------------------------------------------
 # registry
 # --------------------------------------------------------------------------
@@ -632,6 +644,15 @@ TOOLS: tuple[Tool, ...] = (
             "required": ["id"],
         },
         handler=delete_reminder_tool,
+    ),
+    Tool(
+        name="delete_all_reminders",
+        description=(
+            "Matikan SEMUA pengingat aktif milik user. Hanya pakai kalau user "
+            "jelas-jelas minta semuanya dihapus dan kamu sudah menampilkan daftarnya."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=delete_all_reminders,
     ),
 )
 

@@ -451,6 +451,17 @@ def delete_reminder(reminder_id: int, user_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def disable_all_reminders(user_id: int) -> int:
+    """Cancel every active reminder for one user. Returns how many were hit.
+
+    Scoped by user_id on purpose: a bulk delete that ignored it would let one
+    user wipe everyone's reminders.
+    """
+    with _cursor() as cur:
+        cur.execute("UPDATE reminders SET active = 0 WHERE user_id = ? AND active = 1", (user_id,))
+        return cur.rowcount
+
+
 def claim_due_reminders(now: datetime) -> list[dict[str, Any]]:
     """Claim every reminder whose due_at has passed and return them.
 
