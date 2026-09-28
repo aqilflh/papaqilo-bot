@@ -175,6 +175,8 @@ class Bot:
     async def cmd_start(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
             return
+        user_id = update.effective_user.id
+        log_event(log, logging.INFO, "user_started_bot", user_id=user_id)
         nama = (update.effective_user.first_name or "kamu").split()[0]
         await self._reply(update, f"Halo {nama}! Kirim /help untuk daftar perintah.")
 
@@ -336,6 +338,7 @@ class Bot:
         user = db.get_user(user_id) or {}
         day = db.local_day(user_zone(user.get("timezone")))
         if db.usage_remaining(user_id, day) <= 0:
+            log_event(log, logging.INFO, "daily_limit_hit", user_id=user_id, day=day)
             await self._reply(
                 update, f"Kuotes harianmu habis ({user.get('daily_limit')} pesan). Reset besok ya."
             )
@@ -351,6 +354,18 @@ class Bot:
             await self._reply(update, "Ada yang error di sisiku. Coba lagi sebentar ya.")
             return
 
+        # Log the outcome of every accepted message. Without this, a bot that is
+        # up but silently not answering looks identical to a healthy one.
+        log_event(
+            log,
+            logging.INFO,
+            "message_handled",
+            user_id=user_id,
+            chars=len(text),
+            tools=result.tool_calls,
+            tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out,
+        )
         await self._reply(update, result.text)
 
     async def on_error(self, update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
