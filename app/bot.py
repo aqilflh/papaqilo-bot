@@ -14,7 +14,7 @@ from typing import Any
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.error import TelegramError
-from telegram.ext import Application, ContextTypes, MessageHandler, CommandHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app import db
 from app.agent import Agent, run_and_store, user_zone
@@ -142,9 +142,7 @@ class Bot:
         application.add_handler(CommandHandler("removeuser", self.cmd_removeuser))
         application.add_handler(CommandHandler("users", self.cmd_users))
         # Must stay last: it catches every non-command text message.
-        application.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text)
-        )
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
 
         application.add_error_handler(self.on_error)
 
@@ -345,9 +343,7 @@ class Bot:
 
         await update.effective_chat.send_action(ChatAction.TYPING)
         try:
-            result = await run_and_store(
-                self.agent, user_id, text, owner=self._is_owner(user_id)
-            )
+            result = await run_and_store(self.agent, user_id, text, owner=self._is_owner(user_id))
         except Exception as exc:  # noqa: BLE001 - a handler must never kill the process
             log_event(
                 log, logging.ERROR, "agent_crashed", user_id=user_id, error=type(exc).__name__

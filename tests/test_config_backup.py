@@ -113,8 +113,10 @@ def test_non_boolean_is_fatal(monkeypatch):
         load_config()
 
 
-@pytest.mark.parametrize("raw,expected", [("true", True), ("1", True), ("on", True),
-                                          ("false", False), ("0", False), ("no", False)])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("true", True), ("1", True), ("on", True), ("false", False), ("0", False), ("no", False)],
+)
 def test_boolean_parsing(monkeypatch, raw, expected):
     monkeypatch.setenv("DEEPSEEK_THINKING", raw)
     assert load_config().deepseek_thinking is expected
