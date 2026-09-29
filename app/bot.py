@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from app import actions, db, routes, shifts
+from app import actions, db, geo, routes, shifts
 from app.agent import Agent, run_and_store, user_zone
 from app.log import get_logger, log_event
 from app.recap import build_recap
@@ -368,7 +368,7 @@ class Bot:
         wizard = routes.get_wizard(user_id)
         if wizard is not None and wizard["phase"] == "confirm":
             try:
-                reply_text = routes.save_wizard(user_id, wizard)
+                reply_text, route_id = routes.save_wizard(user_id, wizard)
             except Exception as exc:
                 log_event(
                     log,
@@ -384,6 +384,7 @@ class Bot:
             # cmd_simpan runs outside the agent loop; record the confirmation
             # so the model learns the route exists on later turns.
             db.add_message(user_id, "assistant", reply_text)
+            await self._route_eta_after_save(update, user_id, route_id)
             return
         parsed = shifts.pending_import(user_id)
         if parsed is None:
@@ -409,6 +410,45 @@ class Bot:
             return
         log_event(log, logging.INFO, "shift_import_saved", user_id=user_id, saved=saved)
         await self._reply(update, f"Jadwal tersimpan: {saved} shift. Cek /besok.")
+
+    async def _route_eta_after_save(
+        self, update: Update, user_id: int, route_id: int | None
+    ) -> None:
+        """Fetch and store a freshly saved route's ETA, then tell the user.
+
+        Runs in plain code: the model is never allowed to invent travel time.
+        Silently does nothing when the API key is unset or the call fails --
+        the route itself is already saved.
+        """
+        api_key = getattr(self.config, "google_maps_api_key", "") or ""
+        if not api_key or not route_id:
+            return
+        route = db.get_route(route_id, user_id)
+        if route is None:
+            return
+        waypoints = [
+            (w["latitude"], w["longitude"]) for w in db.list_waypoints(route_id, user_id)
+        ]
+        try:
+            metrics = await geo.compute_route(
+                self.http,
+                api_key,
+                (route["origin_lat"], route["origin_lng"]),
+                waypoints,
+                (route["destination_lat"], route["destination_lng"]),
+            )
+        except geo.RouteError as exc:
+            log_event(log, logging.WARNING, "route_eta_skipped", user_id=user_id, error=str(exc))
+            return
+        db.set_route_metrics(
+            route_id, user_id, metrics["distance_meters"], metrics["duration_seconds"]
+        )
+        text = (
+            f"⏱️ Estimasi: ±{routes.fmt_duration(metrics['duration_seconds'])} • "
+            f"{routes.fmt_distance(metrics['distance_meters'])}"
+        )
+        await self._reply(update, text)
+        db.add_message(user_id, "assistant", text)
 
     async def cmd_routes(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
@@ -858,11 +898,12 @@ class Bot:
         if wizard is not None:
             reply_text, should_save = routes.handle_wizard_text(wizard, text)
             if should_save:
-                saved = routes.save_wizard(user_id, wizard)
+                saved, route_id = routes.save_wizard(user_id, wizard)
                 await self._reply(update, saved)
                 # The save confirmation runs outside the agent loop; record it
                 # so the model learns the route exists on later turns.
                 db.add_message(user_id, "assistant", saved)
+                await self._route_eta_after_save(update, user_id, route_id)
             else:
                 await self._reply(update, reply_text)
             return

@@ -125,11 +125,39 @@ def _wp_noun(n: int) -> str:
     return "waypoint" if n == 1 else "waypoints"
 
 
+def fmt_duration(seconds: int) -> str:
+    """`2700` -> `45 menit`, `5400` -> `1 jam 30 menit`."""
+    minutes = max(1, round(seconds / 60))
+    if minutes < 60:
+        return f"{minutes} menit"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} jam {rest} menit" if rest else f"{hours} jam"
+
+
+def fmt_distance(meters: int) -> str:
+    """`9736` -> `9,7 km` (Indonesian decimal comma)."""
+    return f"{meters / 1000:.1f} km".replace(".", ",")
+
+
+def eta_line(route: dict[str, Any]) -> str | None:
+    """`⏱️ ±45 menit • 9,7 km`, or None when no metric was computed yet."""
+    duration = route.get("duration_seconds")
+    if not duration:
+        return None
+    parts = [f"⏱️ ±{fmt_duration(int(duration))}"]
+    distance = route.get("distance_meters")
+    if distance:
+        parts.append(fmt_distance(int(distance)))
+    return " • ".join(parts)
+
+
 def route_summary(route: dict[str, Any], waypoints: list[dict[str, Any]]) -> str:
-    """One-line: `via Pasar Minggu (A → 2 waypoints → B)`."""
+    """One-line: `via Pasar Minggu (A → 2 waypoints → B)` (+ ETA if known)."""
     label = route["name"] or "(utama)"
     wps = len(waypoints)
-    return f"{label} (A → {wps} {_wp_noun(wps)} → B)"
+    line = f"{label} (A → {wps} {_wp_noun(wps)} → B)"
+    eta = eta_line(route)
+    return f"{line} · {eta}" if eta else line
 
 
 def list_routes_text(user_id: int) -> str:
@@ -165,6 +193,9 @@ def show_route_text(user_id: int, group: dict[str, Any]) -> str:
             )
         lines.append(f"📍 B   {fmt_coord(route['destination_lat'], route['destination_lng'])}")
         lines.append(f"Total titik: {len(wp) + 2}")
+        eta = eta_line(route)
+        if eta:
+            lines.append(f"ETA: {eta}")
     return "\n".join(lines)
 
 
@@ -326,13 +357,13 @@ def handle_wizard_text(wizard: dict[str, Any], text: str) -> tuple[str, bool]:
     return "", False
 
 
-def save_wizard(user_id: int, wizard: dict[str, Any]) -> str:
-    """Persist the wizard's route and return the confirmation message."""
+def save_wizard(user_id: int, wizard: dict[str, Any]) -> tuple[str, int | None]:
+    """Persist the wizard's route. Returns (confirmation, route_id)."""
     if wizard.get("kind") == "alt" and wizard.get("group_id"):
         group = db.get_route_group(wizard["group_id"], user_id)
         if group is None:
             clear_wizard(user_id)
-            return "Group route-nya sudah tidak ada. Mulai lagi dari awal ya."
+            return "Group route-nya sudah tidak ada. Mulai lagi dari awal ya.", None
         group_id, group_name = group["id"], group["name"]
     else:
         group_name = wizard.get("group_name") or "Route"
@@ -345,10 +376,12 @@ def save_wizard(user_id: int, wizard: dict[str, Any]) -> str:
     origin = wizard["origin"]
     dest = wizard["destination"]
     wps = wizard["waypoints"]
-    db.create_route(user_id, group_id, alt_name, origin[0], origin[1], dest[0], dest[1], wps)
+    route_id = db.create_route(
+        user_id, group_id, alt_name, origin[0], origin[1], dest[0], dest[1], wps
+    )
     label = f"{group_name} via {alt_name}" if alt_name else group_name
     log_event(
         log, logging.INFO, "route_saved", user_id=user_id, route_label=label, waypoints=len(wps)
     )
     clear_wizard(user_id)
-    return f'✅ Route "{label}" berhasil disimpan.'
+    return f'✅ Route "{label}" berhasil disimpan.', route_id

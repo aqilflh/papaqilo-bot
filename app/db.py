@@ -165,12 +165,19 @@ CREATE TABLE route_waypoints (
 CREATE INDEX idx_waypoints_route ON route_waypoints(route_id, sequence);
 """
 
+_MIGRATION_5 = """
+ALTER TABLE routes ADD COLUMN distance_meters INTEGER;
+ALTER TABLE routes ADD COLUMN duration_seconds INTEGER;
+ALTER TABLE routes ADD COLUMN eta_updated_at TEXT;
+"""
+
 # Each entry is (target_user_version, sql). Append only; never edit a shipped one.
 MIGRATIONS: Sequence[tuple[int, str]] = (
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
     (3, _MIGRATION_3),
     (4, _MIGRATION_4),
+    (5, _MIGRATION_5),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -1158,3 +1165,19 @@ def list_waypoints(route_id: int, user_id: int) -> list[dict[str, Any]]:
             (route_id, user_id),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def set_route_metrics(
+    route_id: int,
+    user_id: int,
+    distance_meters: int,
+    duration_seconds: int,
+) -> bool:
+    """Store the routing provider's distance/duration for one route."""
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE routes SET distance_meters = ?, duration_seconds = ?, "
+            "eta_updated_at = ? WHERE id = ? AND user_id = ?",
+            (int(distance_meters), int(duration_seconds), now_utc_iso(), route_id, user_id),
+        )
+        return cur.rowcount > 0

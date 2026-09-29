@@ -6,6 +6,7 @@ model, and where a tool must fail closed rather than return something.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -459,3 +460,16 @@ async def test_news_reports_an_unknown_feed_name():
     with pytest.raises(ToolError, match="tidak dikenal"):
         await get_news(ctx, {"feed_names": ["Detik"]})
     await ctx.http.aclose()
+
+
+def test_route_eta_without_api_key_says_so(conn):
+    out = asyncio.run(
+        run_tool(
+            "route_eta",
+            {"name": "Pulang"},
+            ToolContext(user_id=7, saved_city=None, http=None, feeds=[]),
+            owner=True,
+        )
+    )
+    assert "belum aktif" in out
+    assert "GOOGLE_MAPS_API_KEY" in out

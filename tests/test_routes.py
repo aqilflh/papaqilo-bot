@@ -100,8 +100,9 @@ def test_full_wizard_flow_persists_route():
     reply, _ = routes.record_location(w, *B)
     assert "Preview" in reply and "/simpan" in reply
     assert routes.get_wizard(OWNER)["phase"] == "confirm"
-    text = routes.save_wizard(OWNER, routes.get_wizard(OWNER))
+    text, route_id = routes.save_wizard(OWNER, routes.get_wizard(OWNER))
     assert "berhasil disimpan" in text and "Pasar Minggu" in text
+    assert route_id is not None
     groups = db.list_route_groups(OWNER)
     assert len(groups) == 1 and groups[0]["route_count"] == 1
     assert routes.get_wizard(OWNER) is None
@@ -311,3 +312,24 @@ def test_on_text_route_status_plain_code():
     assert "via Pasar Minggu" in replies[0]
     hist = [m["content"] for m in db.recent_messages(OWNER, 5)]
     assert any("via Pasar Minggu" in c for c in hist)
+
+
+def test_eta_format_helpers():
+    assert routes.fmt_duration(2700) == "45 menit"
+    assert routes.fmt_duration(3600) == "1 jam"
+    assert routes.fmt_duration(5400) == "1 jam 30 menit"
+    assert routes.fmt_distance(9736) == "9,7 km"
+    assert routes.eta_line({"duration_seconds": None}) is None
+    assert routes.eta_line({"duration_seconds": 2700}) == "⏱️ ±45 menit"
+
+
+def test_route_metrics_show_in_list_and_detail():
+    gid = _seed_route("via Pasar Minggu")
+    rid = db.route_by_name(OWNER, "via Pasar Minggu")["id"]
+    assert db.set_route_metrics(rid, OWNER, 9736, 2700) is True
+    assert db.set_route_metrics(rid, 9999, 1, 1) is False  # wrong owner
+    listing = _run("list_routes", {})
+    assert "±45 menit" in listing and "9,7 km" in listing
+    detail = _run("show_route", {"name": "Pulang"})
+    assert "ETA: ⏱️ ±45 menit • 9,7 km" in detail
+    assert gid == db.route_group_by_name(OWNER, "Pulang")["id"]

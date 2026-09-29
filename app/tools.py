@@ -27,7 +27,7 @@ from typing import Any
 import feedparser
 import httpx
 
-from app import actions, db, routes
+from app import actions, db, geo, routes
 from app.log import get_logger, log_event
 from app.reminders import describe_when, format_reminder, parse_due
 from app.tz import user_zone
@@ -100,6 +100,7 @@ class ToolContext:
     saved_city: str | None
     http: httpx.AsyncClient
     feeds: list[dict[str, str]]
+    maps_api_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -727,6 +728,60 @@ async def cancel_route_creation(ctx: ToolContext, args: dict[str, Any]) -> str:
     return "Pembuatan route dibatalkan."
 
 
+async def route_eta(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Compute (and store) the routing provider's ETA for a route group."""
+    if not ctx.maps_api_key:
+        return (
+            "ETA belum aktif: GOOGLE_MAPS_API_KEY belum diisi di server. "
+            "Route & koordinatnya tetap tersimpan."
+        )
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return 'Sebutkan nama route, misal: ETA route "Pulang".'
+
+    group = db.route_group_by_name(ctx.user_id, name)
+    if group is not None:
+        label = group["name"]
+        targets = db.list_routes(group["id"], ctx.user_id)
+    else:
+        route = db.route_by_name(ctx.user_id, name)
+        if route is None:
+            return f'Tidak ketemu route "{name}". Coba "lihat route" untuk daftarnya.'
+        label = route["name"] or "(utama)"
+        targets = [route]
+    if not targets:
+        return f'Route "{label}" belum punya alternatif yang tersimpan.'
+
+    lines = [f"⏱️ ETA {label}:"]
+    for route in targets:
+        alt = route["name"] or "(utama)"
+        if route["origin_lat"] is None or route["destination_lat"] is None:
+            lines.append(f"- {alt}: koordinat belum lengkap.")
+            continue
+        waypoints = [
+            (w["latitude"], w["longitude"]) for w in db.list_waypoints(route["id"], ctx.user_id)
+        ]
+        try:
+            metrics = await geo.compute_route(
+                ctx.http,
+                ctx.maps_api_key,
+                (route["origin_lat"], route["origin_lng"]),
+                waypoints,
+                (route["destination_lat"], route["destination_lng"]),
+            )
+        except geo.RouteError as exc:
+            lines.append(f"- {alt}: gagal ({exc})")
+            continue
+        db.set_route_metrics(
+            route["id"], ctx.user_id, metrics["distance_meters"], metrics["duration_seconds"]
+        )
+        lines.append(
+            f"- {alt}: ±{routes.fmt_duration(metrics['duration_seconds'])} • "
+            f"{routes.fmt_distance(metrics['distance_meters'])}"
+        )
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------
 # registry
 # --------------------------------------------------------------------------
@@ -1077,6 +1132,27 @@ TOOLS: tuple[Tool, ...] = (
         description="Batalkan pembuatan route yang sedang berlangsung (state wizard).",
         parameters={"type": "object", "properties": {}},
         handler=cancel_route_creation,
+    ),
+    Tool(
+        name="route_eta",
+        description=(
+            "Hitung estimasi waktu tempuh (ETA) dan jarak sebuah route memakai "
+            "Google Routes API, lalu simpan hasilnya. Panggil ini kalau user minta "
+            "'ETA route ...', 'berapa lama route ...', atau setelah route baru "
+            "disimpan. JANGAN mengarang angka: laporkan persis hasil tool. Kalau "
+            "tool bilang ETA belum aktif, sampaikan itu apa adanya."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Nama route group, misal 'Pulang'.",
+                }
+            },
+            "required": ["name"],
+        },
+        handler=route_eta,
     ),
 )
 

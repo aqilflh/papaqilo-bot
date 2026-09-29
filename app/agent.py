@@ -117,8 +117,10 @@ Route:
   group dengan banyak alternatif (atau all=true) disiapkan sebagai daftar dan
   minta /hapus. Jangan bilang sudah terhapus sebelum tool berhasil.
 - "Batal" saat sedang membuat route → cancel_route_creation.
-- Jangan pernah mengarang ETA/waktu tempuh lalu lintas; untuk sekarang bot
-  hanya menyimpan rute dan menunjukkan koordinatnya.
+- "ETA route X" / "berapa lama route X" / "cek waktu tempuh X" → route_eta.
+  Angka ETA HANYA boleh dari hasil tool route_eta (Google Routes API). DILARANG
+  mengarang ETA, jarak, atau info lalu lintas. Kalau tool bilang ETA belum
+  aktif, sampaikan apa adanya.
 
 Jujur soal tindakan:
 - DILARANG mengatakan sudah menghapus, sudah dikirim, atau sudah disimpan
@@ -209,6 +211,7 @@ class Agent:
             saved_city=user.get("city"),
             http=self.http,
             feeds=self.feeds,
+            maps_api_key=getattr(self.config, "google_maps_api_key", "") or "",
         )
         messages = self.build_messages(user_id, user_text)
         tools = tool_definitions(owner=owner)

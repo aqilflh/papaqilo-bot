@@ -84,6 +84,7 @@ class Config:
     request_timeout: float
     show_thinking: bool
     log_level: str
+    google_maps_api_key: str = ""
 
 
 def load_config() -> Config:
@@ -123,6 +124,8 @@ def load_config() -> Config:
         request_timeout=_float("REQUEST_TIMEOUT_SECONDS", 60.0),
         show_thinking=_bool("SHOW_THINKING", False),
         log_level=_str("LOG_LEVEL", "INFO").upper(),
+        # Optional: without it, routes still work, only ETA is skipped.
+        google_maps_api_key=_str("GOOGLE_MAPS_API_KEY", ""),
     )
 
     if cfg.max_tool_iterations < 1:
