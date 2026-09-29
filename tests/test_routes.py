@@ -228,6 +228,12 @@ class _LocUpdate(_U):
         self.effective_message = _Msg(lat, lng)
 
 
+class _TextUpdate(_U):
+    def __init__(self, text: str, user_id: int = OWNER):
+        super().__init__(user_id)
+        self.effective_message = type("M", (), {"text": text})()
+
+
 def _bot(replies: list[str]) -> Bot:
     bot = Bot.__new__(Bot)
     bot.config = type("C", (), {"owner_telegram_id": OWNER})()
@@ -277,3 +283,31 @@ def test_cmd_batal_cancels_wizard():
     assert routes.get_wizard(OWNER) is None
     hist = [m["content"] for m in db.recent_messages(OWNER, 5)]
     assert any("Pembuatan route dibatalkan" in c for c in hist)
+
+
+def test_status_query_classification():
+    assert routes.is_status_query("cek route pulang") is True
+    assert routes.is_status_query("lihat route yang available") is True
+    assert routes.is_status_query("ada rute nggak") is True
+    assert routes.is_status_query("buat route pulang") is False
+    assert routes.is_status_query("tambah alternatif route pulang") is False
+    assert routes.is_status_query("hapus route pulang") is False
+    assert routes.is_status_query("jangan lupa beli susu") is False
+
+
+def test_status_reply_plain_code():
+    _seed_route("via Pasar Minggu")
+    detail = routes.status_reply(OWNER, "cek route pulang via pasar minggu")
+    assert detail is not None and "via Pasar Minggu" in detail and "-6.123456" in detail
+    listing = routes.status_reply(OWNER, "cek route yang available")
+    assert listing is not None and "2 waypoints" in listing
+    assert routes.status_reply(OWNER, "buat route pulang") is None
+
+
+def test_on_text_route_status_plain_code():
+    _seed_route("via Pasar Minggu")
+    replies: list[str] = []
+    asyncio.run(_bot(replies).on_text(_TextUpdate("cek route pulang"), None))
+    assert "via Pasar Minggu" in replies[0]
+    hist = [m["content"] for m in db.recent_messages(OWNER, 5)]
+    assert any("via Pasar Minggu" in c for c in hist)

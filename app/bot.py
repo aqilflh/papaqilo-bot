@@ -867,6 +867,14 @@ class Bot:
                 await self._reply(update, reply_text)
             return
 
+        # Route status questions are answered in plain code from the DB, never
+        # by the LLM: the model was inventing "belum ada route" from memory.
+        status = routes.status_reply(user_id, text)
+        if status is not None:
+            await self._reply(update, status)
+            db.add_message(user_id, "assistant", status)
+            return
+
         # A pasted schedule is data, not chat: parse it in plain code, never
         # send it to the LLM, and never store it in the chat history.
         if count_matching_lines(text) >= 5:

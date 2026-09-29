@@ -168,6 +168,46 @@ def show_route_text(user_id: int, group: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+#: Words that mark a read-only question about routes, not a mutation.
+_STATUS_WORDS = ("cek", "lihat", "liat", "daftar", "list", "ada", "available", "berapa")
+_MUTATION_WORDS = (
+    "buat",
+    "bikin",
+    "tambah",
+    "hapus",
+    "rename",
+    "ganti",
+    "simpan",
+    "batal",
+    "reset",
+)
+
+
+def is_status_query(text: str) -> bool:
+    """True when the text is a read-only question about existing routes."""
+    t = text.lower()
+    if "route" not in t and "rute" not in t:
+        return False
+    if any(word in t for word in _MUTATION_WORDS):
+        return False
+    return any(word in t for word in _STATUS_WORDS)
+
+
+def status_reply(user_id: int, text: str) -> str | None:
+    """Deterministic answer for a route-status question, else None.
+
+    The model kept inventing "belum ada route" from stale memory, so route
+    status is answered in plain code straight from the database.
+    """
+    if not is_status_query(text):
+        return None
+    lowered = text.lower()
+    for group in db.list_route_groups(user_id):
+        if group["name"].lower() in lowered:
+            return show_route_text(user_id, group)
+    return list_routes_text(user_id)
+
+
 def preview_text(state: dict[str, Any]) -> str:
     """Preview right before saving, ending with the /simpan ask."""
     wps = state["waypoints"]
