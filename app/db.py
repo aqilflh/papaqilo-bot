@@ -98,8 +98,43 @@ CREATE INDEX idx_reminders_due ON reminders(active, due_at);
 CREATE INDEX idx_reminders_user ON reminders(user_id, id);
 """
 
+_MIGRATION_3 = """
+CREATE TABLE shifts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL REFERENCES users(id),
+  shift_date  TEXT NOT NULL,           -- 'YYYY-MM-DD' (date the shift starts)
+  kind        TEXT NOT NULL,           -- 'pagi' | 'siang' | 'malam' | 'libur'
+  place       TEXT,                    -- 'igd' | 'klinik' | 'rs' ... lowercase
+  note        TEXT,                    -- e.g. 'prolanis', 'ranap'
+  partners    TEXT,                    -- comma-separated first names
+  raw         TEXT NOT NULL,           -- the original pasted line
+  UNIQUE(user_id, shift_date)
+);
+CREATE INDEX idx_shifts_user ON shifts(user_id, shift_date);
+
+CREATE TABLE shift_settings (
+  user_id      INTEGER PRIMARY KEY REFERENCES users(id),
+  reminders_on INTEGER NOT NULL DEFAULT 1,
+  eve_time     TEXT NOT NULL DEFAULT '20:00',  -- D-1 reminder time (user tz)
+  before_min   INTEGER,                        -- day-of reminder N min before start, NULL = off
+  hours_json   TEXT                            -- {"pagi":["07:00","14:00"],...}, NULL until set
+);
+
+CREATE TABLE shift_reminders_sent (
+  user_id     INTEGER NOT NULL REFERENCES users(id),
+  kind        TEXT NOT NULL,           -- 'eve' | 'before' | 'expiry'
+  target_date TEXT NOT NULL,           -- 'YYYY-MM-DD'
+  sent_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, kind, target_date)
+);
+"""
+
 # Each entry is (target_user_version, sql). Append only; never edit a shipped one.
-MIGRATIONS: Sequence[tuple[int, str]] = ((1, _MIGRATION_1), (2, _MIGRATION_2))
+MIGRATIONS: Sequence[tuple[int, str]] = (
+    (1, _MIGRATION_1),
+    (2, _MIGRATION_2),
+    (3, _MIGRATION_3),
+)
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
 
@@ -272,7 +307,16 @@ def remove_user(user_id: int) -> int:
         cur.execute("SELECT COUNT(*) FROM messages WHERE user_id = ?", (user_id,))
         removed = int(cur.fetchone()[0])
         # ON DELETE CASCADE is not declared, so delete children explicitly.
-        for table in ("messages", "notes", "schedules", "usage"):
+        for table in (
+            "messages",
+            "notes",
+            "schedules",
+            "usage",
+            "reminders",
+            "shifts",
+            "shift_settings",
+            "shift_reminders_sent",
+        ):
             cur.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
         cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
     return removed
@@ -697,3 +741,177 @@ def backup_to(dest: Path) -> None:
 
 def now_utc_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+# --------------------------------------------------------------------------
+# shift schedules
+# --------------------------------------------------------------------------
+
+SHIFT_KINDS = ("pagi", "siang", "malam", "libur")
+DEFAULT_EVE_TIME = "20:00"
+
+
+def upsert_shift(
+    user_id: int,
+    shift_date: str,
+    kind: str,
+    place: str | None = None,
+    note: str | None = None,
+    partners: Sequence[str] | None = None,
+    raw: str = "",
+) -> None:
+    """Insert a shift, or overwrite an existing one for the same date.
+
+    Upsert by (user_id, shift_date) on purpose: the import flow re-pastes a
+    whole month and an edited line must replace the old one, not duplicate it.
+    """
+    partners_csv = ", ".join(partners) if partners else None
+    with _cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO shifts (user_id, shift_date, kind, place, note, partners, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, shift_date) DO UPDATE SET
+                kind     = excluded.kind,
+                place    = excluded.place,
+                note     = excluded.note,
+                partners = excluded.partners,
+                raw      = excluded.raw
+            """,
+            (user_id, shift_date, kind, place, note, partners_csv, raw),
+        )
+
+
+def delete_shift(user_id: int, shift_date: str) -> bool:
+    """Delete one shift. False if it does not exist or belongs to someone else."""
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM shifts WHERE user_id = ? AND shift_date = ?", (user_id, shift_date)
+        )
+        return cur.rowcount > 0
+
+
+def get_shift(user_id: int, shift_date: str) -> dict[str, Any] | None:
+    with _cursor() as cur:
+        row = cur.execute(
+            "SELECT * FROM shifts WHERE user_id = ? AND shift_date = ?", (user_id, shift_date)
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def list_shifts(user_id: int, start_date: str, end_date: str | None = None) -> list[dict[str, Any]]:
+    """This user's shifts from a start date, optionally capped by an end date."""
+    sql = "SELECT * FROM shifts WHERE user_id = ? AND shift_date >= ?"
+    params: list[Any] = [user_id, start_date]
+    if end_date is not None:
+        sql += " AND shift_date <= ?"
+        params.append(end_date)
+    sql += " ORDER BY shift_date ASC"
+    with _cursor() as cur:
+        rows = cur.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def last_shift_date(user_id: int) -> str | None:
+    """The furthest-out stored shift, used for the expiry warning."""
+    with _cursor() as cur:
+        row = cur.execute(
+            "SELECT MAX(shift_date) FROM shifts WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    value = row[0] if row else None
+    return value if value is not None else None
+
+
+def shift_user_ids() -> list[int]:
+    """Every user who owns at least one shift row."""
+    with _cursor() as cur:
+        rows = cur.execute("SELECT DISTINCT user_id FROM shifts").fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def get_shift_settings(user_id: int) -> dict[str, Any]:
+    """The user's reminder settings with sane defaults when never touched.
+
+    `hours` is always a dict so the rest of the code can call .get() freely.
+    """
+    with _cursor() as cur:
+        row = cur.execute("SELECT * FROM shift_settings WHERE user_id = ?", (user_id,)).fetchone()
+    result = _row_to_dict(row)
+    if result is None:
+        return {
+            "reminders_on": True,
+            "eve_time": DEFAULT_EVE_TIME,
+            "before_min": None,
+            "hours": {},
+        }
+    hours: dict[str, str] = {}
+    if result.get("hours_json"):
+        try:
+            parsed = json.loads(result["hours_json"])
+            if isinstance(parsed, dict):
+                hours = {str(k): str(v) for k, v in parsed.items()}
+        except json.JSONDecodeError:
+            hours = {}
+    return {
+        "reminders_on": bool(result.get("reminders_on", 1)),
+        "eve_time": str(result.get("eve_time") or DEFAULT_EVE_TIME),
+        "before_min": (int(result["before_min"]) if result.get("before_min") is not None else None),
+        "hours": hours,
+    }
+
+
+def _put_shift_settings(user_id: int, fields: dict[str, Any]) -> None:
+    columns = ", ".join(fields)
+    placeholders = ", ".join("?" for _ in fields)
+    updates = ", ".join(f"{key} = excluded.{key}" for key in fields)
+    with _cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO shift_settings (user_id, {columns})
+            VALUES (?, {placeholders})
+            ON CONFLICT(user_id) DO UPDATE SET {updates}
+            """,
+            (user_id, *fields.values()),
+        )
+
+
+def set_shift_reminders_on(user_id: int, enabled: bool) -> None:
+    _put_shift_settings(user_id, {"reminders_on": int(enabled)})
+
+
+def set_shift_eve_time(user_id: int, hhmm: str) -> None:
+    _put_shift_settings(user_id, {"eve_time": hhmm})
+
+
+def set_shift_before_min(user_id: int, minutes: int | None) -> None:
+    _put_shift_settings(user_id, {"before_min": minutes})
+
+
+def set_shift_hours(user_id: int, hours: dict[str, str]) -> None:
+    """Replace every kind's hours at once (the /jam command edits one key)."""
+    _put_shift_settings(user_id, {"hours_json": json.dumps(hours)})
+
+
+def claim_shift_reminder(user_id: int, kind: str, target_date: str) -> bool:
+    """Claim a reminder delivery. False if it was already sent.
+
+    Like claim_due_reminders, the PK does the dedup: INSERT OR IGNORE succeeds
+    (rowcount 1) only the first time, so Duplicate across restarts cannot fire
+    twice even if two ticks race.
+    """
+    with _transaction() as cur:
+        cur.execute(
+            "INSERT OR IGNORE INTO shift_reminders_sent "
+            "(user_id, kind, target_date) VALUES (?, ?, ?)",
+            (user_id, kind, target_date),
+        )
+        return cur.rowcount == 1
+
+
+def release_shift_reminder(user_id: int, kind: str, target_date: str) -> None:
+    """Undo a claim after a send failure so the next tick retries."""
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM shift_reminders_sent WHERE user_id = ? AND kind = ? AND target_date = ?",
+            (user_id, kind, target_date),
+        )

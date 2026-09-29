@@ -150,15 +150,23 @@ scp user@server:/home/user/agent/data/backups/agent-*.db .
 
 ## 7. Acceptance checklist
 
-Status terakhir tercatat (2026-09-28, 179 test hijau):
+Status terakhir tercatat (2026-09-29, 222 test hijau):
 
 1. [x] `docker compose up -d --build` start & sehat; log `bot_started`, tanpa secrets.
 2. [x] Owner kirim pesan dapat jawaban (live). Akun asing tidak dibalas & muncul warning — terverifikasi via kode + test, **belum dicoba live**.
-3. [ ] `/adduser` menambah user kedua; catatan & riwayatnya terpisah dari owner — belum diuji live.
+3. [x] `/adduser` menambah user kedua; catatan & riwayatnya terpisah dari owner — live.
 4. [x] "Cuaca hari ini?" memicu `get_weather` (live); "catat: beli susu" memicu `save_note`; `/notes` menampilkan.
-5. [ ] `/recap_now` dan jadwal recap — terverifikasi via test + log, **belum dikonfirmasi live** pengiriman pesannya.
+5. [x] `/recap_now` terkirim; jadwal recap tervalidasi test + log — live.
 6. [ ] Batas harian bekerja — terverifikasi via test, belum diuji live.
 7. [x] `docker stats` ~55 MB (limit 512 MB) — live.
 8. [x] Ada berkas backup di `data/backups/` — live.
+
+Phase 9 (shift jaga):
+
+9. [ ] Tempel jadwal (fixture `tests/fixtures/jadwal_sample.txt`) → preview per minggu + tombol Simpan.
+10. [ ] Diperlukan bulan ambigu → bot tanya, tidak menebak.
+11. [ ] `/besok` dan `/jadwal_saya` menampilkan jadwal tersimpan.
+12. [ ] Reminder D-1 (jam `eve_time`), libur → "Besok libur.", sebelum mulai, dan peringatan "Jadwal tersimpan sampai ..." — via test + injeksi jam.
+13. [ ] `/jaga`, `/hapus_jaga`, `/jam`, `/sebelum`, `/pengingat`, `/jam_eve` memakai & menulis jam shift masing-masing user.
 
 Status: [x] = terverifikasi, [ ] = belum diuji live.

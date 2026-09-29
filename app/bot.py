@@ -8,20 +8,29 @@ at WARNING so the owner can find it in the server log and run /adduser.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict, TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
-from app import db
+from app import db, shifts
 from app.agent import Agent, run_and_store, user_zone
 from app.log import get_logger, log_event
 from app.recap import build_recap
 from app.reminders import format_reminder
 from app.scheduler import DEFAULT_RECAP_TIME, parse_hhmm
+from app.shift_parser import PLACES, count_matching_lines, parse_schedule, resolve_manual_date
 
 log = get_logger("bot")
 
@@ -49,6 +58,17 @@ Cukup ngobrol aja, misalnya "ingetin aku besok jam 9 pagi meeting" atau
 jamnya supaya kelihatan kalau aku salah.
 /reminders - daftar pengingat aktif
 /remind_del <nomor> - batalkan pengingat
+
+Jadwal shift:
+/jadwal - cara kirim jadwal bulanan (tempel teksnya, aku yang baca)
+/besok - jadwal besok
+/jadwal_saya [hari] - jadwal N hari ke depan (default 7)
+/jaga <dd/mm> <pagi|siang|malam|libur> [tempat] - tambah/edit manual
+/hapus_jaga <dd/mm> - hapus jadwal
+/pengingat on|off - nyalakan/matikan pengingat shift
+/jam_eve HH:MM - jam pesan pengingat D-1 (default 20:00)
+/jam <shift> HH:MM-HH:MM - jam shift (misal: /jam malam 22:00-06:00)
+/sebelum <menit|off> - ingatkan beberapa menit sebelum shift mulai
 
 Owner:
 /adduser <id> <nama> - tambah pengguna
@@ -146,11 +166,23 @@ class Bot:
         application.add_handler(CommandHandler("notes", self.cmd_notes))
         application.add_handler(CommandHandler("reminders", self.cmd_reminders))
         application.add_handler(CommandHandler("remind_del", self.cmd_remind_del))
+        application.add_handler(CommandHandler("jadwal", self.cmd_jadwal))
+        application.add_handler(CommandHandler("besok", self.cmd_besok))
+        application.add_handler(CommandHandler("jadwal_saya", self.cmd_jadwal_saya))
+        application.add_handler(CommandHandler("jaga", self.cmd_jaga))
+        application.add_handler(CommandHandler("hapus_jaga", self.cmd_hapus_jaga))
+        application.add_handler(CommandHandler("pengingat", self.cmd_pengingat))
+        application.add_handler(CommandHandler("jam_eve", self.cmd_jam_eve))
+        application.add_handler(CommandHandler("jam", self.cmd_jam))
+        application.add_handler(CommandHandler("sebelum", self.cmd_sebelum))
         application.add_handler(CommandHandler("usage", self.cmd_usage))
         application.add_handler(CommandHandler("forget", self.cmd_forget))
         application.add_handler(CommandHandler("adduser", self.cmd_adduser))
         application.add_handler(CommandHandler("removeuser", self.cmd_removeuser))
         application.add_handler(CommandHandler("users", self.cmd_users))
+        application.add_handler(
+            CallbackQueryHandler(self.on_shift_callback, pattern=r"^shift_(save|cancel):\d+")
+        )
         # Must stay last: it catches every non-command text message.
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
 
@@ -294,6 +326,284 @@ class Bot:
         else:
             await self._reply(update, f"Tidak ada pengingat aktif #{reminder_id} milik lo.")
 
+    # ------------------------------------------------------------- shifts
+
+    def _user_tz(self, user_id: int) -> Any:
+        user = db.get_user(user_id) or {}
+        return user_zone(user.get("timezone"))
+
+    async def cmd_jadwal(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        await self._reply(
+            update,
+            "Tempel jadwal bulananmu (isi penuh, tanpa diedit), misalnya:\n\n"
+            "OKTOBER\n"
+            "1 kamis igd malam (+jihan)\n"
+            "2 jumat: klinik siang\n"
+            "3 sabtu libur\n"
+            "5 senin igd pagi/prolanis\n\n"
+            "Tiap baris: tanggal + hari + tempat + waktu. Aku tampilkan pratinjau "
+            "dulu (tombol Simpan / Batal) sebelum menyimpan. Kalau bulan tidak "
+            "ketahuan, aku minta kamu tulis nama bulannya.",
+        )
+
+    async def cmd_besok(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        user_id = update.effective_user.id
+        await self._reply(
+            update, shifts.besok_text(user_id, self._user_tz(update.effective_user.id))
+        )
+
+    async def cmd_jadwal_saya(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        days = 7
+        if ctx.args:
+            try:
+                days = int(ctx.args[0])
+            except ValueError:
+                await self._reply(update, "Jumlah hari harus angka, contoh: /jadwal_saya 14")
+                return
+        if not 1 <= days <= 90:
+            await self._reply(update, "Jumlah hari antara 1 sampai 90.")
+            return
+        user_id = update.effective_user.id
+        await self._reply(
+            update,
+            shifts.my_shifts_text(user_id, self._user_tz(update.effective_user.id), days),
+        )
+
+    async def cmd_jaga(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Manual add/edit: /jaga <dd/mm> <kind> [place]"""
+        if not await self._guard(update):
+            return
+        args = ctx.args or []
+        if len(args) < 2:
+            await self._reply(update, "Pakai: /jaga <dd/mm> <pagi|siang|malam|libur> [tempat]")
+            return
+        match = re.fullmatch(r"(\d{1,2})/(\d{1,2})", args[0])
+        if match is None:
+            await self._reply(update, "Tanggal harus format dd/mm, contoh: /jaga 22/10 malam igd")
+            return
+        day, month = int(match.group(1)), int(match.group(2))
+        kind = args[1].lower()
+        if kind not in db.SHIFT_KINDS:
+            allowed = ", ".join(db.SHIFT_KINDS)
+            await self._reply(update, f"Jenis shift harus salah satu dari: {allowed}")
+            return
+        place = args[2].lower() if len(args) > 2 else None
+        if place is not None and place not in PLACES:
+            await self._reply(
+                update, f"Tempat harus salah satu dari: {', '.join(PLACES)} (atau kosongkan)."
+            )
+            return
+        today = datetime.now(self._user_tz(update.effective_user.id)).date()
+        resolve = resolve_manual_date(today, day, month)
+        if resolve is None:
+            await self._reply(update, "Tanggal tidak valid.")
+            return
+        user_id = update.effective_user.id
+        db.upsert_shift(user_id, resolve.isoformat(), kind, place, raw=" ".join(args).upper())
+        row = db.get_shift(user_id, resolve.isoformat())
+        hours = db.get_shift_settings(user_id)["hours"]
+        await self._reply(
+            update,
+            f"Jaga {shifts.fmt_day(resolve)}: {shifts.describe_shift(row, hours)}.",
+        )
+
+    async def cmd_hapus_jaga(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        if not ctx.args:
+            await self._reply(update, "Pakai: /hapus_jaga <dd/mm>")
+            return
+        match = re.fullmatch(r"(\d{1,2})/(\d{1,2})", ctx.args[0])
+        if match is None:
+            await self._reply(update, "Format tanggal salah, contoh: /hapus_jaga 22/10")
+            return
+        day, month = int(match.group(1)), int(match.group(2))
+        today = datetime.now(self._user_tz(update.effective_user.id)).date()
+        resolve = resolve_manual_date(today, day, month)
+        if resolve is None:
+            await self._reply(update, "Tanggal tidak valid.")
+            return
+        if db.delete_shift(update.effective_user.id, resolve.isoformat()):
+            await self._reply(update, f"Jadwal {shifts.fmt_day(resolve)} dihapus.")
+        else:
+            await self._reply(update, f"Tidak ada jadwal {shifts.fmt_day(resolve)}.")
+
+    async def cmd_pengingat(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        if not ctx.args or ctx.args[0].lower() not in ("on", "off"):
+            settings = db.get_shift_settings(update.effective_user.id)
+            state = "aktif" if settings["reminders_on"] else "mati"
+            await self._reply(
+                update,
+                f"Pengingat shift sedang {state} (D-1 jam {settings['eve_time']}). "
+                "Ubah: /pengingat on|off",
+            )
+            return
+        enabled = ctx.args[0].lower() == "on"
+        db.set_shift_reminders_on(update.effective_user.id, enabled)
+        if enabled:
+            eve = db.get_shift_settings(update.effective_user.id)["eve_time"]
+            await self._reply(update, f"Pengingat shift aktif. Pesan D-1 dikirim tiap jam {eve}.")
+        else:
+            await self._reply(update, "Pengingat shift dimatikan.")
+
+    async def cmd_jam_eve(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        if not ctx.args or parse_hhmm(ctx.args[0]) is None:
+            await self._reply(update, "Format jam salah, contoh: /jam_eve 20:00")
+            return
+        db.set_shift_eve_time(update.effective_user.id, ctx.args[0])
+        await self._reply(update, f"Pesan pengingat D-1 jadi jam {ctx.args[0]}.")
+
+    async def cmd_jam(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        user_id = update.effective_user.id
+        settings = db.get_shift_settings(user_id)
+        if not ctx.args:
+            if not settings["hours"]:
+                await self._reply(update, "Jam shift belum diatur. Contoh: /jam malam 22:00-06:00")
+                return
+            lines = [f"{kind}: {span}" for kind, span in sorted(settings["hours"].items())]
+            await self._reply(update, "Jam shift:\n" + "\n".join(lines))
+            return
+        kind = ctx.args[0].lower()
+        if kind not in db.SHIFT_KINDS or kind == "libur":
+            await self._reply(update, "Jenis shift harus pagi, siang, atau malam.")
+            return
+        if len(ctx.args) < 2:
+            await self._reply(update, "Pakai: /jam <pagi|siang|malam> HH:MM-HH:MM")
+            return
+        match = re.fullmatch(r"(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", ctx.args[1])
+        bad_span = (
+            match is None
+            or parse_hhmm(match.group(1)) is None
+            or parse_hhmm(match.group(2)) is None
+        )
+        if bad_span:
+            await self._reply(update, "Format jam salah, contoh: /jam siang 12:00-20:00")
+            return
+        hours = dict(settings["hours"])
+        hours[kind] = ctx.args[1]
+        db.set_shift_hours(user_id, hours)
+        await self._reply(update, f"Jam {kind}: {ctx.args[1]}.")
+
+    async def cmd_sebelum(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        user_id = update.effective_user.id
+        if not ctx.args:
+            value = db.get_shift_settings(user_id)["before_min"]
+            state_line = (
+                f"Pengingat sebelum mulai: {value} menit"
+                if value
+                else "Pengingat sebelum mulai: off"
+            )
+            await self._reply(update, state_line)
+            return
+        raw = ctx.args[0].lower()
+        if raw == "off":
+            db.set_shift_before_min(user_id, None)
+            await self._reply(update, "Pengingat sebelum mulai dimatikan.")
+            return
+        try:
+            minutes = int(raw)
+        except ValueError:
+            await self._reply(update, "Pakai: /sebelum <menit> atau /sebelum off")
+            return
+        if not 1 <= minutes <= 1440:
+            await self._reply(update, "Menit harus antara 1 sampai 1440.")
+            return
+        db.set_shift_before_min(user_id, minutes)
+        await self._reply(update, f"Pengingat {minutes} menit sebelum shift mulai.")
+
+    async def on_shift_callback(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Simpan / Batal on a pasted-schedule preview."""
+        query = update.callback_query
+        if query is None or query.data is None:
+            return
+        user_id = query.from_user.id
+        if not self._allowed(user_id):
+            await query.answer("Bukan untuk kamu.")
+            return
+        payload = query.data.split(":")
+        action = payload[0] if payload else ""
+        try:
+            owner_id = int(payload[1]) if len(payload) > 1 else user_id
+        except ValueError:
+            owner_id = user_id
+        if owner_id != user_id:
+            await query.answer("Tombol ini untuk sesi import yang lain.")
+            return
+
+        if action == "shift_cancel":
+            shifts.clear_pending(user_id)
+            await query.answer()
+            await query.edit_message_text("Import jadwal dibatalkan.")
+            return
+
+        parsed = shifts.pending_import(user_id)
+        if parsed is None:
+            await query.answer("Sesi import sudah kedaluwarsa, kirim ulang jadwalmu.")
+            await query.edit_message_text("Import jadwal kedaluwarsa.")
+            return
+        saved = shifts.apply_import(user_id, parsed)
+        shifts.clear_pending(user_id)
+        await query.answer()
+        await query.edit_message_text(f"Jadwal tersimpan: {saved} shift. Cek /besok.")
+        log_event(log, logging.INFO, "shift_import_saved", user_id=user_id, saved=saved)
+
+    async def _handle_shift_import(self, update: Update) -> None:
+        """A plain text with >=5 shift-looking lines is an import, not chat."""
+        user_id = update.effective_user.id
+        tz = self._user_tz(user_id)
+        today = datetime.now(tz).date()
+        parsed = parse_schedule(update.effective_message.text or "", today)
+        if parsed.ambiguous:
+            await self._reply(
+                update,
+                "Bulan jadwal belum jelas untuk baris pertama. Tulis nama bulan di "
+                "baris paling atas (misal: OKTOBER), lalu kirim ulang.",
+            )
+            return
+        if not parsed.savable:
+            await self._reply(
+                update,
+                "Tidak ada baris jadwal yang bisa diproses. Cek format dengan /jadwal.",
+            )
+            return
+        shifts.stage_pending(user_id, parsed)
+        chunks = split_message(shifts.render_preview(parsed))
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Simpan", callback_data=f"shift_save:{user_id}"),
+                    InlineKeyboardButton("Batal", callback_data=f"shift_cancel:{user_id}"),
+                ]
+            ]
+        )
+        for index, chunk in enumerate(chunks):
+            markup = keyboard if index == len(chunks) - 1 else None
+            await self.application.bot.send_message(
+                chat_id=user_id, text=chunk, reply_markup=markup
+            )
+        log_event(
+            log,
+            logging.INFO,
+            "shift_import_preview",
+            user_id=user_id,
+            lines=len(parsed.entries),
+            savable=len(parsed.savable),
+        )
+
     async def cmd_usage(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
             return
@@ -382,6 +692,24 @@ class Bot:
             return
         user_id = update.effective_user.id
         text = update.effective_message.text or ""
+
+        # A pasted schedule is data, not chat: parse it in plain code, never
+        # send it to the LLM, and never store it in the chat history.
+        if count_matching_lines(text) >= 5:
+            try:
+                await self._handle_shift_import(update)
+            except Exception as exc:  # noqa: BLE001 - handler must never die
+                log_event(
+                    log,
+                    logging.ERROR,
+                    "shift_import_failed",
+                    user_id=user_id,
+                    error=type(exc).__name__,
+                )
+                await self._reply(
+                    update, "Gagal membaca jadwal. Coba kirim ulang, atau cek /jadwal."
+                )
+            return
 
         user = db.get_user(user_id) or {}
         day = db.local_day(user_zone(user.get("timezone")))

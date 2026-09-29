@@ -24,6 +24,7 @@ from app.config import Config, ConfigError, load_config
 from app.log import get_logger, log_event, setup_logging
 from app.reminders import deliver_due
 from app.scheduler import TICK_SECONDS, run_backup_if_due, run_recaps
+from app.shifts import deliver_shift_reminders
 from app.tools import load_feeds
 
 log = get_logger("main")
@@ -59,6 +60,13 @@ async def tick(bot: Bot) -> None:
             log_event(log, logging.INFO, "tick_reminders", sent=reminded)
     except Exception as exc:  # noqa: BLE001
         log_event(log, logging.ERROR, "tick_reminders_failed", error=type(exc).__name__)
+
+    try:
+        shift_sent = await deliver_shift_reminders(bot, now=now)
+        if shift_sent:
+            log_event(log, logging.INFO, "tick_shift_reminders", sent=shift_sent)
+    except Exception as exc:  # noqa: BLE001
+        log_event(log, logging.ERROR, "tick_shift_reminders_failed", error=type(exc).__name__)
 
     try:
         if run_backup_if_due(bot.config.db_path, now=now, last_run=bot.last_backup):
