@@ -17,6 +17,7 @@ agent/
 │   ├── actions.py     # penghapusan berkonfirmasi (/hapus)
 │   ├── shifts.py      # jadwal jaga, impor, teks jadwal, pengingat shift
 │   ├── routes.py      # wizard route: nama -> 📍 lokasi -> simpan
+│   ├── geo.py         # Google Routes API (ETA + jarak)
 │   ├── shift_parser.py# parse teks jadwal jaga
 │   ├── recap.py       # kumpulkan data, minta LLM merangkum
 │   ├── scheduler.py   # tick tiap 60 detik
@@ -71,6 +72,10 @@ docker compose logs -f
 | `OWNER_TELEGRAM_ID` | ID Telegram owner (pemilik bot) |
 
 Sisanya opsional dengan default aman. File `.env` **tidak boleh di-commit**; sudah masuk `.gitignore`.
+
+`GOOGLE_MAPS_API_KEY` (opsional) dipakai untuk menghitung ETA + jarak lewat Google
+Routes API. Aktifkan "Routes API" di Google Cloud Console. Tanpa key, route tetap
+tersimpan dan tampil — hanya ETA yang dilewati.
 
 ### Memulai / membuka bot
 ```bash
@@ -136,8 +141,15 @@ hapus semua pengingat        -> usulkan daftar, minta /hapus
 buat route pulang            -> wizard: nama -> 📍 A -> waypoint -> done -> 📍 B -> /simpan
 tambah alternatif route pulang via TB Simatupang -> wizard alternatif
 lihat route gue              -> list_routes (atau /routes)
+cek route pulang via gempol  -> detail: A, tiap waypoint, B (+ ETA kalau ada)
+ETA route pulang             -> route_eta: hitung & simpan ETA + jarak (Google Routes API)
 hapus route via Pasar Minggu -> delete_route (group besar minta /hapus)
 ```
+
+Saat route baru disimpan, bot otomatis menghitung ETA & jaraknya (kalau
+`GOOGLE_MAPS_API_KEY` diset) dan menyimpannya, lalu menampilkannya di
+`/routes` dan `lihat route X`. Angka ETA **hanya** berasal dari Google Routes
+API — model tidak pernah mengarang waktu tempuh.
 
 Penghapusan lewat chat selalu **berkonfirmasi**: tool hanya menyiapkan daftar,
 lalu bot minta `/hapus` untuk menjalankan (atau `/batal` untuk batal). Satu
@@ -178,7 +190,7 @@ scp user@server:/home/user/agent/data/backups/agent-*.db .
 
 ## 7. Acceptance checklist
 
-Status terakhir tercatat (2026-09-29, 258 test hijau):
+Status terakhir tercatat (2026-09-29, 288 test hijau):
 
 1. [x] `docker compose up -d --build` start & sehat; log `bot_started`, tanpa secrets.
 2. [x] Owner kirim pesan dapat jawaban (live). Akun asing tidak dibalas & muncul warning — terverifikasi via kode + test, **belum dicoba live**.
@@ -203,8 +215,9 @@ Phase 9 selesai & terverifikasi manual.
 
 Phase 10 (route):
 
-16. [ ] "Buat route ..." → wizard nama → 📍 titik A → waypoint 📍 → "done" → 📍 titik B → `/simpan` tersimpan.
-17. [ ] "Tambah alternatif" untuk group yang sama menyimpan label alternatif.
-18. [ ] `/routes`, "lihat route X", "rename route", "hapus route" berfungsi dan ter-scope per user.
+16. [x] "Buat route ..." → wizard nama → 📍 titik A → waypoint 📍 → "done" → 📍 titik B → `/simpan` tersimpan (live: "Pulang via Gempol", 8 waypoint).
+17. [ ] "Tambah alternatif" untuk group yang sama menyimpan label alternatif — didukung kode + test, belum diuji live.
+18. [x] `/routes`, "lihat route X", "rename route", "hapus route" berfungsi dan ter-scope per user (list/show/hapus live; rename via test).
+19. [x] ETA + jarak via Google Routes API (live: route 8 waypoint → 14 menit, 4,6 km), dihitung saat `/simpan` dan lewat "ETA route ...". Tanpa key, route tetap jalan.
 
 Status: [x] = terverifikasi, [ ] = belum diuji live.
