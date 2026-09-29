@@ -107,6 +107,11 @@ Route:
   DILARANG mengarang koordinat, titik, atau jumlah waypoint.
 - "Tambah alternatif route X" → add_route_alternative.
 - "Lihat route gue" → list_routes. "Lihat route X" → show_route.
+- KALAU user menanyakan apakah ada route, cek status route, atau daftarnya
+  (misal "ada route nggak?", "cek route ...", "available route"), WAJIB panggil
+  list_routes / show_route dan jawab dari hasil tool itu. DILARANG menjawab
+  dari ingatan atau riwayat chat: wizard berjalan dan pesan langsung bot tidak
+  tercatat di history, jadi status route HANYA benar lewat tool.
 - "Rename route A jadi B" → rename_route.
 - "Hapus route A" → delete_route. Satu alternatif yang jelas langsung terhapus;
   group dengan banyak alternatif (atau all=true) disiapkan sebagai daftar dan

@@ -381,6 +381,9 @@ class Bot:
                 await self._reply(update, "Gagal menyimpan route. Coba mulai ulang ya.")
                 return
             await self._reply(update, reply_text)
+            # cmd_simpan runs outside the agent loop; record the confirmation
+            # so the model learns the route exists on later turns.
+            db.add_message(user_id, "assistant", reply_text)
             return
         parsed = shifts.pending_import(user_id)
         if parsed is None:
@@ -463,7 +466,9 @@ class Bot:
         elif import_pending:
             await self._reply(update, "Import jadwal dibatalkan.")
         elif wizard_active:
-            await self._reply(update, "Pembuatan route dibatalkan.")
+            msg = "Pembuatan route dibatalkan."
+            await self._reply(update, msg)
+            db.add_message(user_id, "assistant", msg)
         else:
             await self._reply(update, "Tidak ada yang sedang berjalan.")
 
@@ -853,7 +858,11 @@ class Bot:
         if wizard is not None:
             reply_text, should_save = routes.handle_wizard_text(wizard, text)
             if should_save:
-                await self._reply(update, routes.save_wizard(user_id, wizard))
+                saved = routes.save_wizard(user_id, wizard)
+                await self._reply(update, saved)
+                # The save confirmation runs outside the agent loop; record it
+                # so the model learns the route exists on later turns.
+                db.add_message(user_id, "assistant", saved)
             else:
                 await self._reply(update, reply_text)
             return

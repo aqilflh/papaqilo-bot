@@ -265,6 +265,8 @@ def test_cmd_simpan_saves_route_preview():
     asyncio.run(_bot(replies).cmd_simpan(_U(), None))
     assert replies[0].startswith("✅ Route")
     assert db.list_route_groups(OWNER)[0]["route_count"] == 1
+    hist = [m["content"] for m in db.recent_messages(OWNER, 5)]
+    assert any("berhasil disimpan" in c for c in hist)
 
 
 def test_cmd_batal_cancels_wizard():
@@ -273,3 +275,5 @@ def test_cmd_batal_cancels_wizard():
     asyncio.run(_bot(replies).cmd_batal(_U(), None))
     assert replies == ["Pembuatan route dibatalkan."]
     assert routes.get_wizard(OWNER) is None
+    hist = [m["content"] for m in db.recent_messages(OWNER, 5)]
+    assert any("Pembuatan route dibatalkan" in c for c in hist)
