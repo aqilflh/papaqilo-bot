@@ -186,11 +186,13 @@ Status terakhir tercatat (2026-09-29, 258 test hijau):
 Phase 9 (shift jaga):
 
 9. [x] Tempel jadwal → preview per minggu → `/simpan` menyimpan (live: 10 shift Oktober tersimpan). Alur tombol inline diganti perintah `/simpan` & `/batal` (callback tidak pernah diterima; handler tombol lama dipertahankan sebagai cadangan).
-10. [ ] Diperlukan bulan ambigu → bot tanya, tidak menebak.
-11. [ ] `/besok` dan `/jadwal_saya` menampilkan jadwal tersimpan (test hijau; belum dikonfirmasi live).
+10. [x] Diperlukan bulan ambigu → bot tanya, tidak menebak (manual).
+11. [x] `/besok` dan `/jadwal_saya` menampilkan jadwal tersimpan (manual).
 12. [x] Reminder D-1 terkirim live (eve_time diinjeksi 07:00 untuk shift besok); libur → "Besok libur.", sebelum mulai, dan peringatan "Jadwal tersimpan sampai ..." via test.
-13. [ ] `/jaga`, `/hapus_jaga`, `/jam`, `/sebelum`, `/pengingat`, `/jam_eve` memakai & menulis jam shift masing-masing user.
-14. [ ] Tanya jadwal lewat chat ("kamis ada jadwal apa") dijawab via `get_schedule` (terdeploy, belum dikonfirmasi live).
-15. [ ] Hapus berkonfirmasi via chat + `/hapus` untuk jadwal/pengingat/catatan (terdeploy, belum diuji user).
+13. [x] `/jaga`, `/hapus_jaga`, `/jam`, `/sebelum`, `/pengingat`, `/jam_eve` memakai & menulis jam shift masing-masing user (manual).
+14. [x] Tanya jadwal lewat chat ("kamis ada jadwal apa") dijawab via `get_schedule` (manual).
+15. [x] Hapus berkonfirmasi via chat + `/hapus` untuk jadwal/pengingat/catatan (manual).
+
+Phase 9 selesai & terverifikasi manual.
 
 Status: [x] = terverifikasi, [ ] = belum diuji live.
