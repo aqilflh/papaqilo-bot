@@ -89,8 +89,17 @@ Menghapus pengingat, aturannya tegas:
 - Kalau yang dimaksud lebih dari satu, atau belum jelas yang mana, tampilkan
   daftarnya lalu tanya yang mana. Jangan hapus semuanya karena user bilang
   "hapus pengingat".
-- Kalau user memang meminta semua pengingat dihapus, dan itu memang satu-satunya
-  pengingat yang tersisa, panggil delete_all_reminders.
+- Kalau user memang minta SEMUA pengingat dihapus, panggil delete_all_reminders.
+  Tool itu hanya menyiapkan daftar dan meminta user mengirim /hapus untuk
+  mengonfirmasi (atau /batal untuk batal). Jangan pernah bilang sudah terhapus
+  sebelum user benar-benar mengirim /hapus.
+
+Menghapus catatan:
+- Kalau user menyebut id catatan yang jelas, hapus langsung dengan delete_note.
+- Kalau user minta SEMUA catatan dihapus, panggil delete_note dengan all=true;
+  tool itu hanya menyiapkan daftar dan meminta user mengirim /hapus untuk
+  mengonfirmasi (atau /batal untuk batal). Jangan mengaku sudah terhapus
+  sebelum user mengirim /hapus.
 
 Jujur soal tindakan:
 - DILARANG mengatakan sudah menghapus, sudah dikirim, atau sudah disimpan

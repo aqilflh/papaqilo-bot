@@ -791,6 +791,23 @@ def delete_shift(user_id: int, shift_date: str) -> bool:
         return cur.rowcount > 0
 
 
+def delete_shifts_range(user_id: int, start_date: str, end_date: str) -> int:
+    """Delete every shift in a closed date range for one user."""
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM shifts WHERE user_id = ? AND shift_date BETWEEN ? AND ?",
+            (user_id, start_date, end_date),
+        )
+        return cur.rowcount
+
+
+def delete_all_shifts(user_id: int) -> int:
+    """Delete every shift this user has stored."""
+    with _cursor() as cur:
+        cur.execute("DELETE FROM shifts WHERE user_id = ?", (user_id,))
+        return cur.rowcount
+
+
 def get_shift(user_id: int, shift_date: str) -> dict[str, Any] | None:
     with _cursor() as cur:
         row = cur.execute(

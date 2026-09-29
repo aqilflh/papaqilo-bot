@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import CallbackQuery, Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict, TelegramError
 from telegram.ext import (
@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from app import db, shifts
+from app import actions, db, shifts
 from app.agent import Agent, run_and_store, user_zone
 from app.log import get_logger, log_event
 from app.recap import build_recap
@@ -64,7 +64,8 @@ Jadwal shift:
 /besok - jadwal besok
 /jadwal_saya [hari] - jadwal N hari ke depan (default 7)
 /jaga <dd/mm> <pagi|siang|malam|libur> [tempat] - tambah/edit manual
-/hapus_jaga <dd/mm> - hapus jadwal
+/hapus_jaga <dd/mm> - hapus satu jadwal
+/hapus - konfirmasi penghapusan yang diusulkan lewat chat (jadwal/pengingat/catatan)
 /pengingat on|off - nyalakan/matikan pengingat shift
 /jam_eve HH:MM - jam pesan pengingat D-1 (default 20:00)
 /jam <shift> HH:MM-HH:MM - jam shift (misal: /jam malam 22:00-06:00)
@@ -168,6 +169,9 @@ class Bot:
         application.add_handler(CommandHandler("remind_del", self.cmd_remind_del))
         application.add_handler(CommandHandler("jadwal", self.cmd_jadwal))
         application.add_handler(CommandHandler("besok", self.cmd_besok))
+        application.add_handler(CommandHandler("simpan", self.cmd_simpan))
+        application.add_handler(CommandHandler("batal", self.cmd_batal))
+        application.add_handler(CommandHandler("hapus", self.cmd_hapus))
         application.add_handler(CommandHandler("jadwal_saya", self.cmd_jadwal_saya))
         application.add_handler(CommandHandler("jaga", self.cmd_jaga))
         application.add_handler(CommandHandler("hapus_jaga", self.cmd_hapus_jaga))
@@ -183,6 +187,7 @@ class Bot:
         application.add_handler(
             CallbackQueryHandler(self.on_shift_callback, pattern=r"^shift_(save|cancel):\d+")
         )
+        application.add_handler(CallbackQueryHandler(self.on_any_callback))
         # Must stay last: it catches every non-command text message.
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
 
@@ -344,9 +349,76 @@ class Bot:
             "3 sabtu libur\n"
             "5 senin igd pagi/prolanis\n\n"
             "Tiap baris: tanggal + hari + tempat + waktu. Aku tampilkan pratinjau "
-            "dulu (tombol Simpan / Batal) sebelum menyimpan. Kalau bulan tidak "
-            "ketahuan, aku minta kamu tulis nama bulannya.",
+            "dulu; balas /simpan untuk menyimpan atau /batal untuk membatalkan. "
+            "Kalau bulan tidak ketahuan, aku minta kamu tulis nama bulannya.",
         )
+
+    async def cmd_simpan(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        user_id = update.effective_user.id
+        parsed = shifts.pending_import(user_id)
+        if parsed is None:
+            await self._reply(update, "Sesi import sudah kedaluwarsa, tempel ulang jadwalmu.")
+            return
+        try:
+            saved = shifts.apply_import(user_id, parsed)
+            shifts.clear_pending(user_id)
+        except Exception as exc:
+            log_event(
+                log,
+                logging.ERROR,
+                "shift_import_failed",
+                user_id=user_id,
+                error=type(exc).__name__,
+                detail=repr(exc),
+            )
+            await self._reply(update, "Gagal menyimpan jadwal, tempel ulang lalu coba lagi.")
+            return
+        log_event(log, logging.INFO, "shift_import_saved", user_id=user_id, saved=saved)
+        await self._reply(update, f"Jadwal tersimpan: {saved} shift. Cek /besok.")
+
+    async def cmd_hapus(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Confirm a deletion proposed via chat (the agent only stages)."""
+        if not await self._guard(update):
+            return
+        user_id = update.effective_user.id
+        entry = actions.pending(user_id)
+        if not entry:
+            await self._reply(update, "Tidak ada penghapusan yang menunggu konfirmasi.")
+            return
+        kind, targets = entry["kind"], entry["targets"]
+        deleted = 0
+        for key, _label in targets:
+            if actions.apply(user_id, kind, key):
+                deleted += 1
+        actions.clear(user_id)
+        noun = {"shift": "jadwal", "reminder": "pengingat", "note": "catatan"}.get(kind, "item")
+        log_event(
+            log,
+            logging.INFO,
+            f"{kind}_deleted",
+            user_id=user_id,
+            count=deleted,
+            targets=len(targets),
+        )
+        await self._reply(update, f"Terhapus {deleted} {noun}.")
+        if deleted != len(targets):
+            await self._reply(
+                update, "Beberapa tidak ada lagi, kalau-kalau bukan kamu yang menghapusnya."
+            )
+
+    async def cmd_batal(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        user_id = update.effective_user.id
+        delete_staged = actions.pending(user_id) is not None
+        shifts.clear_pending(user_id)
+        actions.clear(user_id)
+        if delete_staged:
+            await self._reply(update, "Penghapusan dibatalkan.")
+        else:
+            await self._reply(update, "Import jadwal dibatalkan.")
 
     async def cmd_besok(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
@@ -531,13 +603,15 @@ class Bot:
         if query is None or query.data is None:
             return
         user_id = query.from_user.id
+        data = query.data
+        log_event(log, logging.INFO, "shift_callback_received", user_id=user_id, data=data)
+        action = data.split(":")[0] if ":" in data else data
         if not self._allowed(user_id):
             await query.answer("Bukan untuk kamu.")
             return
-        payload = query.data.split(":")
-        action = payload[0] if payload else ""
         try:
-            owner_id = int(payload[1]) if len(payload) > 1 else user_id
+            parts = data.split(":")
+            owner_id = int(parts[1]) if len(parts) > 1 else user_id
         except ValueError:
             owner_id = user_id
         if owner_id != user_id:
@@ -546,20 +620,60 @@ class Bot:
 
         if action == "shift_cancel":
             shifts.clear_pending(user_id)
-            await query.answer()
-            await query.edit_message_text("Import jadwal dibatalkan.")
+            await query.answer("Import jadwal dibatalkan.")
+            await self._edit_safe(query, "Import jadwal dibatalkan.")
             return
 
         parsed = shifts.pending_import(user_id)
         if parsed is None:
-            await query.answer("Sesi import sudah kedaluwarsa, kirim ulang jadwalmu.")
-            await query.edit_message_text("Import jadwal kedaluwarsa.")
+            await query.answer("Sesi import kedaluwarsa, kirim ulang jadwalmu.")
+            await self._edit_safe(query, "Import jadwal kedaluwarsa.")
             return
-        saved = shifts.apply_import(user_id, parsed)
-        shifts.clear_pending(user_id)
-        await query.answer()
-        await query.edit_message_text(f"Jadwal tersimpan: {saved} shift. Cek /besok.")
+        try:
+            saved = shifts.apply_import(user_id, parsed)
+            shifts.clear_pending(user_id)
+        except Exception as exc:
+            log_event(
+                log,
+                logging.ERROR,
+                "shift_import_failed",
+                user_id=user_id,
+                error=type(exc).__name__,
+                detail=repr(exc),
+            )
+            await query.answer("Gagal menyimpan jadwal, coba kirim ulang.")
+            return
+        await query.answer(f"Tersimpan {saved} shift.")
+        await self._edit_safe(query, f"Jadwal tersimpan: {saved} shift. Cek /besok.")
         log_event(log, logging.INFO, "shift_import_saved", user_id=user_id, saved=saved)
+
+    async def on_any_callback(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Safety net so no callback query leaves the button spinning forever.
+
+        Logs data that matched nothing; owned by on_shift_callback when it
+        starts with shift_. Anything else is an unknown button.
+        """
+        query = update.callback_query
+        if query is None or query.data is None:
+            return
+        data = query.data
+        log_event(log, logging.WARNING, "shift_callback_unmatched", data=data)
+        if data.startswith("shift_"):
+            return  # on_shift_callback already answered and edited this one.
+        await query.answer("Tombol ini sudah tidak aktif.")
+
+    async def _edit_safe(self, query: CallbackQuery, text: str) -> None:
+        """Edit the preview message, tolerating a stale or deleted message."""
+        try:
+            await query.edit_message_text(text)
+        except Exception as exc:
+            log_event(
+                log,
+                logging.WARNING,
+                "shift_callback_edit_failed",
+                error=type(exc).__name__,
+                detail=repr(exc),
+            )
 
     async def _handle_shift_import(self, update: Update) -> None:
         """A plain text with >=5 shift-looking lines is an import, not chat."""
@@ -582,19 +696,12 @@ class Bot:
             return
         shifts.stage_pending(user_id, parsed)
         chunks = split_message(shifts.render_preview(parsed))
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("Simpan", callback_data=f"shift_save:{user_id}"),
-                    InlineKeyboardButton("Batal", callback_data=f"shift_cancel:{user_id}"),
-                ]
-            ]
+        for chunk in chunks:
+            await self.application.bot.send_message(chat_id=user_id, text=chunk)
+        await self.application.bot.send_message(
+            chat_id=user_id,
+            text="Kirim /simpan untuk menyimpan, atau /batal untuk membatalkan.",
         )
-        for index, chunk in enumerate(chunks):
-            markup = keyboard if index == len(chunks) - 1 else None
-            await self.application.bot.send_message(
-                chat_id=user_id, text=chunk, reply_markup=markup
-            )
         log_event(
             log,
             logging.INFO,

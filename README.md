@@ -14,6 +14,9 @@ agent/
 │   ├── bot.py         # handler Telegram, gate auth, perintah
 │   ├── agent.py       # loop LLM + tool calling
 │   ├── tools.py       # implementasi & skema tool
+│   ├── actions.py     # penghapusan berkonfirmasi (/hapus)
+│   ├── shifts.py      # jadwal jaga, impor, teks jadwal, pengingat shift
+│   ├── shift_parser.py# parse teks jadwal jaga
 │   ├── recap.py       # kumpulkan data, minta LLM merangkum
 │   ├── scheduler.py   # tick tiap 60 detik
 │   ├── reminders.py   # logika pengingat (sekali/harian/mingguan)
@@ -102,6 +105,16 @@ Orang yang belum terdaftar tidak mendapat balasan, tapi id-nya muncul di log ser
 | `/forget` | hapus riwayat chat (catatan tetap) |
 | `/reminders` | daftar pengingat aktif |
 | `/remind_del <no>` | batalkan pengingat |
+| `/besok` | jadwal jaga besok |
+| `/jadwal_saya` | seluruh jadwal jaga tersimpan |
+| `/jam <shift> HH:MM-HH:MM` | atur jam tiap shift (malam, pagi, siang) |
+| `/sebelum <menit\|off>` | pengingat H-0 beberapa menit sebelum jam mulai |
+| `/pengingat on\|off` | aktifkan/matikan pengingat shift |
+| `/jam_eve HH:MM` | jam pengingat D-1 (default 20:00) |
+| `/hapus_jaga <dd/mm>` | hapus satu jadwal jaga (langsung) |
+| `/simpan` | simpan jadwal yang sudah dipreview |
+| `/batal` | batal simpan jadwal / batal penghapusan |
+| `/hapus` | konfirmasi penghapusan yang diusulkan lewat chat |
 | `/adduser <id> <nama>` | (owner) tambah pengguna |
 | `/removeuser <id>` | (owner) hapus pengguna |
 | `/users` | (owner) daftar pengguna |
@@ -112,8 +125,17 @@ Selain perintah, bebas ngobrol:
 cuaca hari ini gimana        -> get_weather pakai kota tersimpan
 catat: beli susu             -> save_note
 ingetin aku besok jam 9 meeting -> set_reminder (otomatis parse waktu)
-hapus pengingat sarapan      -> delete_reminder
+hapus pengingat sarapan      -> list lalu delete_reminder
+kamis ada jadwal apa         -> get_schedule (jadwal shift)
+tempel jadwal jaga           -> preview per minggu, lalu /simpan
+hapus semua jadwal jaga      -> usulkan daftar, minta /hapus
+hapus semua catatan          -> usulkan daftar, minta /hapus
+hapus semua pengingat        -> usulkan daftar, minta /hapus
 ```
+
+Penghapusan lewat chat selalu **berkonfirmasi**: tool hanya menyiapkan daftar,
+lalu bot minta `/hapus` untuk menjalankan (atau `/batal` untuk batal). Satu
+target yang jelas (id catatan/pengingat, satu jadwal) tetap dihapus langsung.
 
 ## 5. Update / upgrade
 
@@ -150,7 +172,7 @@ scp user@server:/home/user/agent/data/backups/agent-*.db .
 
 ## 7. Acceptance checklist
 
-Status terakhir tercatat (2026-09-29, 222 test hijau):
+Status terakhir tercatat (2026-09-29, 258 test hijau):
 
 1. [x] `docker compose up -d --build` start & sehat; log `bot_started`, tanpa secrets.
 2. [x] Owner kirim pesan dapat jawaban (live). Akun asing tidak dibalas & muncul warning — terverifikasi via kode + test, **belum dicoba live**.
@@ -163,10 +185,12 @@ Status terakhir tercatat (2026-09-29, 222 test hijau):
 
 Phase 9 (shift jaga):
 
-9. [ ] Tempel jadwal (fixture `tests/fixtures/jadwal_sample.txt`) → preview per minggu + tombol Simpan.
+9. [x] Tempel jadwal → preview per minggu → `/simpan` menyimpan (live: 10 shift Oktober tersimpan). Alur tombol inline diganti perintah `/simpan` & `/batal` (callback tidak pernah diterima; handler tombol lama dipertahankan sebagai cadangan).
 10. [ ] Diperlukan bulan ambigu → bot tanya, tidak menebak.
-11. [ ] `/besok` dan `/jadwal_saya` menampilkan jadwal tersimpan.
+11. [ ] `/besok` dan `/jadwal_saya` menampilkan jadwal tersimpan (test hijau; belum dikonfirmasi live).
 12. [x] Reminder D-1 terkirim live (eve_time diinjeksi 07:00 untuk shift besok); libur → "Besok libur.", sebelum mulai, dan peringatan "Jadwal tersimpan sampai ..." via test.
 13. [ ] `/jaga`, `/hapus_jaga`, `/jam`, `/sebelum`, `/pengingat`, `/jam_eve` memakai & menulis jam shift masing-masing user.
+14. [ ] Tanya jadwal lewat chat ("kamis ada jadwal apa") dijawab via `get_schedule` (terdeploy, belum dikonfirmasi live).
+15. [ ] Hapus berkonfirmasi via chat + `/hapus` untuk jadwal/pengingat/catatan (terdeploy, belum diuji user).
 
 Status: [x] = terverifikasi, [ ] = belum diuji live.

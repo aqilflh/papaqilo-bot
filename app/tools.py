@@ -27,7 +27,7 @@ from typing import Any
 import feedparser
 import httpx
 
-from app import db
+from app import actions, db
 from app.log import get_logger, log_event
 from app.reminders import describe_when, format_reminder, parse_due
 from app.tz import user_zone
@@ -497,16 +497,106 @@ async def delete_reminder_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
     return f"Tidak ada pengingat aktif dengan id {reminder_id} milik user ini."
 
 
-async def delete_all_reminders(ctx: ToolContext, args: dict[str, Any]) -> str:
-    """Cancel every active reminder for this user.
+async def delete_schedule(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Propose deleting stored shifts. Never deletes directly: the /hapus
+    command carries out a staged proposal after the user confirms."""
+    from app import shifts
 
-    Scoped by user_id, so one user can never clear another's list.
+    user = db.get_user(ctx.user_id)
+    tz = user_zone(user.get("timezone") if user else None)
+    when = args.get("when")
+    days = args.get("days")
+
+    def resolve(when_text: str | None) -> date:
+        return shifts._when_date(datetime.now(tz).date(), when_text)
+
+    rows = db.list_shifts(ctx.user_id, "0001-01-01")
+
+    def label(row: dict[str, Any]) -> str:
+        d = date.fromisoformat(row["shift_date"])
+        return f"{shifts.fmt_day(d)}: {shifts.describe_shift(row)}"
+
+    if args.get("all"):
+        targets = [(row["shift_date"], label(row)) for row in rows]
+    else:
+        if when in (None, "hari ini"):
+            start = resolve(None)
+        else:
+            if not isinstance(when, str):
+                raise ValidationError("when harus berupa nama hari, 'besok', atau tanggal")
+            start = resolve(when)
+        span = 1 if days is None else max(1, int(days))
+        end = start + timedelta(days=span - 1)
+        targets = [
+            (row["shift_date"], label(row))
+            for row in rows
+            if start.isoformat() <= row["shift_date"] <= end.isoformat()
+        ]
+    if not targets:
+        return "Tidak ada jadwal yang cocok untuk dihapus."
+    actions.stage(ctx.user_id, "shift", targets)
+    return actions.proposal_text(targets)
+
+
+async def get_schedule(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Look up the caller's stored shift schedule. Imported lazily to avoid
+    the tools -> shifts -> scheduler -> agent import cycle."""
+    from app.shifts import schedule_text
+
+    user = db.get_user(ctx.user_id)
+    tz = user_zone(user.get("timezone") if user else None)
+    when = args.get("when")
+    if when is not None and not isinstance(when, str):
+        raise ValidationError("when harus berupa nama hari, 'besok', atau tanggal")
+    days = args.get("days")
+    if days is not None:
+        try:
+            days = int(days)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("days harus berupa angka") from exc
+        if days < 1 or days > 60:
+            raise ValidationError("days harus antara 1 dan 60")
+    return schedule_text(ctx.user_id, tz, when=when, days=days)
+
+
+async def delete_all_reminders(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Propose deleting every active reminder for this user.
+
+    Never deletes directly: stages a proposal that /hapus carries out after
+    the user confirms. Scoped by user_id, so one user can never touch
+    another's list.
     """
-    count = db.disable_all_reminders(ctx.user_id)
-    if count == 0:
+    user = db.get_user(ctx.user_id)
+    tz = user_zone(user.get("timezone") if user else None)
+    reminders = db.list_reminders(ctx.user_id, active_only=True)
+    if not reminders:
         return "Tidak ada pengingat aktif untuk dihapus."
-    noun = "pengingat" if count == 1 else "pengingat"
-    return f"{count} {noun} aktif dimatikan."
+    targets = [(r["id"], format_reminder(r, tz)) for r in reminders]
+    actions.stage(ctx.user_id, "reminder", targets)
+    return actions.proposal_text(targets)
+
+
+async def delete_note(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Delete one note directly (clear id), or stage a wipe-all proposal."""
+    raw = args.get("id")
+    if raw is not None:
+        try:
+            note_id = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("id harus berupa angka") from exc
+        if db.delete_note(ctx.user_id, note_id):
+            return f"Catatan #{note_id} dihapus."
+        return f"Tidak ada catatan #{note_id} milik user ini."
+    if args.get("all"):
+        notes = db.list_notes(ctx.user_id, limit=1000)
+        if not notes:
+            return "Belum ada catatan."
+        targets = [
+            (n["id"], f"(id {n['id']}, {n['created_at'][:10]}) {n['content']}") for n in notes
+        ]
+        actions.stage(ctx.user_id, "note", targets)
+        return actions.proposal_text(targets)
+    raise ValidationError("butuh 'id' atau 'all'")
 
 
 # --------------------------------------------------------------------------
@@ -514,6 +604,72 @@ async def delete_all_reminders(ctx: ToolContext, args: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------
 
 TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="delete_schedule",
+        description=(
+            "Usulkan penghapusan jadwal shift milik user. Tool ini TIDAK "
+            "langsung menghapus apa pun: tool ini menyiapkan daftar "
+            "penghapusan, lalu text balasannya minta user mengirim /hapus "
+            "untuk mengonfirmasi (atau /batal untuk batal). Jangan pernah "
+            "mengaku sudah menghapus; tunggu konfirmasi user. Jika user minta "
+            "hapus SEMUA jadwal, set 'all' = true. Kalau tidak, 'when' diisi "
+            "hari ini ('hari ini', 'besok', nama hari, atau YYYY-MM-DD) dan "
+            "'days' untuk rentang hari ke depan (default 1)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "all": {
+                    "type": "boolean",
+                    "description": "True untuk menghapus SEMUA jadwal tersimpan milik user.",
+                },
+                "when": {
+                    "type": "string",
+                    "description": (
+                        "'hari ini', 'besok', 'kemarin', nama hari Bahasa "
+                        "Indonesia, atau tanggal YYYY-MM-DD. Kosongkan untuk hari ini."
+                    ),
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Jumlah hari ke depan (1-60). Default 1.",
+                },
+            },
+            "required": [],
+        },
+        handler=delete_schedule,
+    ),
+    Tool(
+        name="get_schedule",
+        description=(
+            "Tampilkan jadwal shift yang tersimpan milik user untuk satu hari "
+            "atau beberapa hari ke depan. Pakai ini setiap kali user bertanya "
+            "jadwal shift, misalnya 'besok jaga apa', 'kamis ada jadwal apa', "
+            "atau 'jadwal minggu ini'. Parameter 'when' diisi nama hari dalam "
+            "Bahasa Indonesia (senin, selasa, ..., minggu), kata 'besok', "
+            "'kemarin', 'lusa', atau tanggal YYYY-MM-DD; KOSONGKAN untuk hari "
+            "ini. 'days' untuk jumlah hari ke depan (default 1). "
+            "Jawab dalam Bahasa Indonesia yang ringkas."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "when": {
+                    "type": "string",
+                    "description": (
+                        "Nama hari Bahasa Indonesia ('kamis'), 'besok', 'kemarin', "
+                        "'lusa', atau tanggal YYYY-MM-DD. Kosongkan untuk hari ini."
+                    ),
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Jumlah hari ke depan, termasuk tanggal awal (1-60). Default 1.",
+                },
+            },
+            "required": [],
+        },
+        handler=get_schedule,
+    ),
     Tool(
         name="get_weather",
         description=(
@@ -648,11 +804,38 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="delete_all_reminders",
         description=(
-            "Matikan SEMUA pengingat aktif milik user. Hanya pakai kalau user "
-            "jelas-jelas minta semuanya dihapus dan kamu sudah menampilkan daftarnya."
+            "Usulkan penghapusan SEMUA pengingat aktif milik user. Tool ini "
+            "TIDAK langsung mematikan apa pun: tool ini menyiapkan daftar, lalu "
+            "text balasannya minta user mengirim /hapus untuk mengonfirmasi "
+            "(atau /batal untuk batal). Jangan pernah mengaku sudah terhapus "
+            "sebelum user mengirim /hapus. Hanya pakai kalau user jelas-jelas "
+            "minta semuanya dihapus."
         ),
         parameters={"type": "object", "properties": {}},
         handler=delete_all_reminders,
+    ),
+    Tool(
+        name="delete_note",
+        description=(
+            "Hapus catatan milik user. Kalau user menyebut id catatan yang "
+            "jelas, isi 'id' dan catatan itu langsung dihapus. Kalau user "
+            "minta SEMUA catatan dihapus, set 'all' = true dan tool ini hanya "
+            "menyiapkan daftar: text balasannya minta user mengirim /hapus "
+            "untuk mengonfirmasi (atau /batal untuk batal). Jangan mengaku "
+            "sudah terhapus sebelum tool mengembalikan hasil berhasil."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "Id catatan dari list_notes."},
+                "all": {
+                    "type": "boolean",
+                    "description": "True untuk menghapus SEMUA catatan milik user.",
+                },
+            },
+            "required": [],
+        },
+        handler=delete_note,
     ),
 )
 

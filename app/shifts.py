@@ -105,6 +105,55 @@ def my_shifts_text(user_id: int, tz: Any, days: int) -> str:
     return f"Jadwal {days} hari ({today:%d/%m} - {till:%d/%m}):\n" + "\n".join(lines)
 
 
+def _when_date(today: date, when: str | None) -> date:
+    """Resolve 'besok', a weekday name, or a date token to a concrete date."""
+    if not when:
+        return today
+    token = when.strip().lower()
+    if token == "besok":
+        return today + timedelta(days=1)
+    if token == "lusa":
+        return today + timedelta(days=2)
+    if token == "kemarin":
+        return today - timedelta(days=1)
+    nama = {
+        "senin": 0,
+        "selasa": 1,
+        "rabu": 2,
+        "kamis": 3,
+        "jumat": 4,
+        "sabtu": 5,
+        "minggu": 6,
+    }
+    if token in nama:
+        return today + timedelta(days=(nama[token] - today.weekday()) % 7)
+    try:
+        return datetime.fromisoformat(token).date()
+    except ValueError:
+        return today
+
+
+def schedule_text(user_id: int, tz: Any, when: str | None = None, days: int | None = None) -> str:
+    """A lookup for the chat agent: one day or a window of stored shifts."""
+    today = datetime.now(tz).date()
+    start = _when_date(today, when)
+    span = 1 if days is None else max(1, int(days))
+    end = start + timedelta(days=span - 1)
+    rows = db.list_shifts(user_id, start.isoformat(), end.isoformat())
+    if not rows:
+        if span == 1:
+            return f"Tidak ada jadwal {fmt_day(start)}."
+        return f"Tidak ada jadwal {fmt_day(start)} - {fmt_day(end)}."
+    hours = db.get_shift_settings(user_id)["hours"]
+    lines = [
+        f"- {fmt_day(date.fromisoformat(r['shift_date']))}: {describe_shift(r, hours)}"
+        for r in rows
+    ]
+    if span == 1:
+        return f"Jadwal {fmt_day(start)}:\n" + "\n".join(lines)
+    return f"Jadwal {fmt_day(start)} - {fmt_day(end)}:\n" + "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # preview
 # ---------------------------------------------------------------------------
