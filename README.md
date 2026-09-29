@@ -166,7 +166,7 @@ Phase 9 (shift jaga):
 9. [ ] Tempel jadwal (fixture `tests/fixtures/jadwal_sample.txt`) → preview per minggu + tombol Simpan.
 10. [ ] Diperlukan bulan ambigu → bot tanya, tidak menebak.
 11. [ ] `/besok` dan `/jadwal_saya` menampilkan jadwal tersimpan.
-12. [ ] Reminder D-1 (jam `eve_time`), libur → "Besok libur.", sebelum mulai, dan peringatan "Jadwal tersimpan sampai ..." — via test + injeksi jam.
+12. [x] Reminder D-1 terkirim live (eve_time diinjeksi 07:00 untuk shift besok); libur → "Besok libur.", sebelum mulai, dan peringatan "Jadwal tersimpan sampai ..." via test.
 13. [ ] `/jaga`, `/hapus_jaga`, `/jam`, `/sebelum`, `/pengingat`, `/jam_eve` memakai & menulis jam shift masing-masing user.
 
 Status: [x] = terverifikasi, [ ] = belum diuji live.
