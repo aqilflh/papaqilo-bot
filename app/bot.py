@@ -427,8 +427,13 @@ class Bot:
             if actions.apply(user_id, kind, key):
                 deleted += 1
         actions.clear(user_id)
-        noun = {"shift": "jadwal", "reminder": "pengingat", "note": "catatan",
-            "route": "route", "route_group": "route"}.get(kind, "item")
+        noun = {
+            "shift": "jadwal",
+            "reminder": "pengingat",
+            "note": "catatan",
+            "route": "route",
+            "route_group": "route",
+        }.get(kind, "item")
         log_event(
             log,
             logging.INFO,
@@ -912,8 +917,7 @@ class Bot:
         if wizard is None:
             await self._reply(
                 update,
-                "Belum ada pembuatan route yang aktif. Bilang "
-                "\"buat route ...\" untuk mulai.",
+                'Belum ada pembuatan route yang aktif. Bilang "buat route ..." untuk mulai.',
             )
             return
         loc = update.effective_message.location

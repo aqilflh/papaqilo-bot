@@ -105,9 +105,10 @@ def _valid_coord(lat: float, lng: float) -> bool:
 
 def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     lat1, lon1, lat2, lon2 = (math.radians(v) for v in (*a, *b))
-    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(
-        (lon2 - lon1) / 2
-    ) ** 2
+    h = (
+        math.sin((lat2 - lat1) / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    )
     return 2 * 6371000 * math.asin(min(1.0, math.sqrt(h)))
 
 
@@ -135,7 +136,7 @@ def list_routes_text(user_id: int) -> str:
     """Full listing: every group and its alternatives."""
     groups = db.list_route_groups(user_id)
     if not groups:
-        return "Belum ada route. Bilang \"buat route pulang\" untuk mulai."
+        return 'Belum ada route. Bilang "buat route pulang" untuk mulai.'
     lines = ["🛣️ Route lo:"]
     for group in groups:
         routes = db.list_routes(group["id"], user_id)
@@ -144,8 +145,7 @@ def list_routes_text(user_id: int) -> str:
             continue
         lines.append(group["name"])
         lines.extend(
-            "  " + route_summary(route, db.list_waypoints(route["id"], user_id))
-            for route in routes
+            "  " + route_summary(route, db.list_waypoints(route["id"], user_id)) for route in routes
         )
     return "\n".join(lines)
 
@@ -211,7 +211,7 @@ def record_location(wizard: dict[str, Any], lat: float, lng: float) -> tuple[str
         return (
             "✅ Titik A tersimpan.\n\n"
             "Sekarang kirim lokasi waypoint pertama.\n"
-            "Kirim setiap titik yang ingin dilewati, lalu ketik \"done\" kalau sudah "
+            'Kirim setiap titik yang ingin dilewati, lalu ketik "done" kalau sudah '
             "sampai titik B.",
             False,
         )
@@ -230,7 +230,7 @@ def record_location(wizard: dict[str, Any], lat: float, lng: float) -> tuple[str
             )
     wizard["waypoints"].append((lat, lng))
     n = len(wizard["waypoints"])
-    return f"✅ Waypoint {n} tersimpan.\n\nKetik \"done\" kalau sudah sampai titik B.", False
+    return f'✅ Waypoint {n} tersimpan.\n\nKetik "done" kalau sudah sampai titik B.', False
 
 
 def handle_wizard_text(wizard: dict[str, Any], text: str) -> tuple[str, bool]:
@@ -271,7 +271,7 @@ def handle_wizard_text(wizard: dict[str, Any], text: str) -> tuple[str, bool]:
         if wizard["sub"] == "destination":
             return "Kirim lokasi titik B.", False
         return (
-            "Pilih: kirim 📍 lokasi untuk menambah titik, atau ketik \"done\" kalau "
+            'Pilih: kirim 📍 lokasi untuk menambah titik, atau ketik "done" kalau '
             "sudah sampai titik B.",
             False,
         )
@@ -305,12 +305,10 @@ def save_wizard(user_id: int, wizard: dict[str, Any]) -> str:
     origin = wizard["origin"]
     dest = wizard["destination"]
     wps = wizard["waypoints"]
-    db.create_route(
-        user_id, group_id, alt_name, origin[0], origin[1], dest[0], dest[1], wps
-    )
+    db.create_route(user_id, group_id, alt_name, origin[0], origin[1], dest[0], dest[1], wps)
     label = f"{group_name} via {alt_name}" if alt_name else group_name
     log_event(
         log, logging.INFO, "route_saved", user_id=user_id, route_label=label, waypoints=len(wps)
     )
     clear_wizard(user_id)
-    return f"✅ Route \"{label}\" berhasil disimpan."
+    return f'✅ Route "{label}" berhasil disimpan.'

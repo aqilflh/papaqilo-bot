@@ -604,7 +604,7 @@ async def delete_note(ctx: ToolContext, args: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------
 
 
-def create_route_group(ctx: ToolContext, args: dict[str, Any]) -> str:
+async def create_route_group(ctx: ToolContext, args: dict[str, Any]) -> str:
     """Start route creation. Sets the wizard to capture coordinates."""
     name = args.get("name")
     if name and isinstance(name, str) and name.strip():
@@ -623,7 +623,7 @@ def create_route_group(ctx: ToolContext, args: dict[str, Any]) -> str:
     return "🛣️ Create Route\n\nNama route:"
 
 
-def add_route_alternative(ctx: ToolContext, args: dict[str, Any]) -> str:
+async def add_route_alternative(ctx: ToolContext, args: dict[str, Any]) -> str:
     """Add a new alternative route inside an existing group."""
     name = args.get("name")
     if not isinstance(name, str) or not name.strip():
@@ -631,14 +631,17 @@ def add_route_alternative(ctx: ToolContext, args: dict[str, Any]) -> str:
     group = db.route_group_by_name(ctx.user_id, name)
     if group is None:
         return (
-            f"Tidak ada route group \"{name}\". Coba \"lihat route\" untuk daftarnya, "
-            "atau \"buat route ...\" untuk bikin baru."
+            f'Tidak ada route group "{name}". Coba "lihat route" untuk daftarnya, '
+            'atau "buat route ..." untuk bikin baru.'
         )
     alternative = args.get("alternative")
     if alternative is not None and isinstance(alternative, str) and alternative.strip():
         routes.begin_points(
-            ctx.user_id, group["name"], alt_name=alternative.strip()[:60],
-            kind="alt", group_id=group["id"],
+            ctx.user_id,
+            group["name"],
+            alt_name=alternative.strip()[:60],
+            kind="alt",
+            group_id=group["id"],
         )
         return "Oke. Sekarang kirim 📍 lokasi titik A."
     routes.set_wizard(
@@ -654,35 +657,35 @@ def add_route_alternative(ctx: ToolContext, args: dict[str, Any]) -> str:
     return f"🛣️ Tambah Alternatif\n\nUntuk route:\n{group['name']}\n\nNama alternatif:"
 
 
-def list_routes_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+async def list_routes_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
     return _truncate(routes.list_routes_text(ctx.user_id))
 
 
-def show_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+async def show_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
     name = args.get("name")
     if not isinstance(name, str) or not name.strip():
         return _truncate(routes.list_routes_text(ctx.user_id))
     group = db.route_group_by_name(ctx.user_id, name)
     if group is None:
-        return f"Tidak ketemu route \"{name}\". Coba \"lihat route\" untuk daftarnya."
+        return f'Tidak ketemu route "{name}". Coba "lihat route" untuk daftarnya.'
     return _truncate(routes.show_route_text(ctx.user_id, group))
 
 
-def rename_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+async def rename_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
     name = args.get("name")
     new_name = args.get("new_name")
     if not isinstance(name, str) or not isinstance(new_name, str) or not new_name.strip():
         raise ValidationError("name dan new_name wajib diisi")
     target = db.route_by_name(ctx.user_id, name)
     if target is not None and db.rename_route(target["id"], ctx.user_id, new_name):
-        return f"Route \"{name}\" di-rename jadi \"{new_name.strip()}\"."
+        return f'Route "{name}" di-rename jadi "{new_name.strip()}".'
     group = db.route_group_by_name(ctx.user_id, name)
     if group is not None and db.rename_route_group(group["id"], ctx.user_id, new_name):
-        return f"Route group \"{name}\" di-rename jadi \"{new_name.strip()}\"."
-    return f"Tidak ketemu route atau route group bernama \"{name}\"."
+        return f'Route group "{name}" di-rename jadi "{new_name.strip()}".'
+    return f'Tidak ketemu route atau route group bernama "{name}".'
 
 
-def delete_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+async def delete_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
     """Delete one clear route directly; a group with many alternatives (or a
     "delete all") is staged and confirmed through /hapus."""
     if args.get("all"):
@@ -698,18 +701,18 @@ def delete_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
         raise ValidationError("name (atau all=true) wajib diisi")
     route = db.route_by_name(ctx.user_id, name)
     if route is not None and db.delete_route(route["id"], ctx.user_id):
-        return f"Route \"{name}\" dihapus."
+        return f'Route "{name}" dihapus.'
 
     group = db.route_group_by_name(ctx.user_id, name)
     if group is None:
-        return f"Tidak ketemu route \"{name}\". Coba \"lihat route\" untuk daftarnya."
+        return f'Tidak ketemu route "{name}". Coba "lihat route" untuk daftarnya.'
     entries = db.list_routes(group["id"], ctx.user_id)
     if not entries:
         db.delete_route_group(group["id"], ctx.user_id)
-        return f"Group route kosong \"{name}\" dihapus."
+        return f'Group route kosong "{name}" dihapus.'
     if len(entries) == 1 and not entries[0]["name"]:
         db.delete_route(entries[0]["id"], ctx.user_id)
-        return f"Route \"{name}\" dihapus."
+        return f'Route "{name}" dihapus.'
     targets = [
         (g["id"], f"{g['name']} ({g['route_count']} alternatif)")
         for g in db.list_route_groups(ctx.user_id)
@@ -719,7 +722,7 @@ def delete_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
     return actions.proposal_text(targets)
 
 
-def cancel_route_creation(ctx: ToolContext, args: dict[str, Any]) -> str:
+async def cancel_route_creation(ctx: ToolContext, args: dict[str, Any]) -> str:
     routes.clear_wizard(ctx.user_id)
     return "Pembuatan route dibatalkan."
 

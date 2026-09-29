@@ -9,15 +9,7 @@ import pytest
 
 from app import actions, db, routes
 from app.bot import Bot
-from app.tools import (
-    ToolContext,
-    add_route_alternative,
-    create_route_group,
-    delete_route_tool,
-    list_routes_tool,
-    rename_route_tool,
-    show_route_tool,
-)
+from app.tools import ToolContext, run_tool
 
 OWNER = 1001
 
@@ -43,6 +35,10 @@ def db_fixture(tmp_path):
 
 def _ctx() -> ToolContext:
     return ToolContext(user_id=OWNER, saved_city=None, http=None, feeds=[])
+
+
+def _run(name: str, args: dict) -> str:
+    return asyncio.run(run_tool(name, args, _ctx(), owner=True))
 
 
 def _seed_route(as_alternative: str = "") -> int:
@@ -112,8 +108,10 @@ def test_full_wizard_flow_persists_route():
 
 
 def test_wizard_begin_with_name_hint_and_text_name():
-    routes.set_wizard(OWNER, {"phase": "name", "kind": "create", "group_id": None,
-                              "group_name": "", "alt_name": ""})
+    routes.set_wizard(
+        OWNER,
+        {"phase": "name", "kind": "create", "group_id": None, "group_name": "", "alt_name": ""},
+    )
     w = routes.get_wizard(OWNER)
     reply, _ = routes.handle_wizard_text(w, "Pulang")
     assert "lokasi titik A" in reply
@@ -142,48 +140,56 @@ def test_wizard_cancel_clears():
 
 
 def test_create_tool_no_name_asks():
-    reply = create_route_group(_ctx(), {})
+    reply = _run("create_route_group", {})
     assert "Nama route" in reply
     assert routes.get_wizard(OWNER)["phase"] == "name"
 
 
 def test_create_tool_with_name_starts_points():
-    reply = create_route_group(_ctx(), {"name": "Pulang"})
+    reply = _run("create_route_group", {"name": "Pulang"})
     assert "lokasi titik A" in reply
     assert routes.get_wizard(OWNER)["phase"] == "points"
 
 
 def test_add_alternative_requires_group():
-    reply = add_route_alternative(_ctx(), {"name": "Pulang"})
+    reply = _run("add_route_alternative", {"name": "Pulang"})
     assert "Tidak ada route group" in reply
 
 
 def test_add_alternative_with_label_starts_points():
     _seed_route("utama")
-    reply = add_route_alternative(_ctx(), {"name": "Pulang", "alternative": "via Ciputat"})
+    reply = _run("add_route_alternative", {"name": "Pulang", "alternative": "via Ciputat"})
     assert "lokasi titik A" in reply
     assert routes.get_wizard(OWNER)["alt_name"] == "via Ciputat"
 
 
 def test_list_and_show_tools():
     _seed_route("via Pasar Minggu")
-    reply = list_routes_tool(_ctx(), {})
+    reply = _run("list_routes", {})
     assert "Pulang" in reply and "via Pasar Minggu" in reply
-    detail = show_route_tool(_ctx(), {"name": "Pulang"})
+    detail = _run("show_route", {"name": "Pulang"})
     assert "-6.135000" in detail and "📍 B" in detail
 
 
 def test_rename_tool():
     _seed_route("via Pasar Minggu")
-    reply = rename_route_tool(_ctx(), {"name": "via pasar minggu", "new_name": "via Ciputat"})
+    reply = _run("rename_route", {"name": "via pasar minggu", "new_name": "via Ciputat"})
     assert "di-rename" in reply
-    reply = rename_route_tool(_ctx(), {"name": "pulang", "new_name": "Ke rumah"})
+    reply = _run("rename_route", {"name": "pulang", "new_name": "Ke rumah"})
     assert "group" in reply
+
+
+def test_cancel_tool_clears_wizard():
+    _run("create_route_group", {"name": "Pulang"})
+    assert routes.get_wizard(OWNER) is not None
+    reply = _run("cancel_route_creation", {})
+    assert "dibatalkan" in reply
+    assert routes.get_wizard(OWNER) is None
 
 
 def test_delete_single_route_direct():
     _seed_route("via Pasar Minggu")
-    reply = delete_route_tool(_ctx(), {"name": "via pasar minggu"})
+    reply = _run("delete_route", {"name": "via pasar minggu"})
     assert "dihapus" in reply
     assert db.route_by_name(OWNER, "via pasar minggu") is None
     assert actions.pending(OWNER) is None
@@ -192,12 +198,12 @@ def test_delete_single_route_direct():
 def test_delete_group_staged_until_hapus():
     gid = _seed_route("via A")
     db.create_route(OWNER, gid, "via B", *A, *B, [P1])
-    reply = delete_route_tool(_ctx(), {"name": "pulang"})
+    reply = _run("delete_route", {"name": "pulang"})
     assert "/hapus" in reply
     assert len(db.list_routes(gid, OWNER)) == 2
     assert actions.pending(OWNER)["kind"] == "route_group"
     actions.clear(OWNER)
-    reply = delete_route_tool(_ctx(), {"all": True})
+    reply = _run("delete_route", {"all": True})
     assert "/hapus" in reply
     assert actions.pending(OWNER)["kind"] == "route_group"
 

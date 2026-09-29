@@ -1051,9 +1051,7 @@ def delete_route_group(group_id: int, user_id: int) -> bool:
             "(SELECT id FROM routes WHERE group_id = ? AND user_id = ?)",
             (group_id, user_id),
         )
-        cur.execute(
-            "DELETE FROM routes WHERE group_id = ? AND user_id = ?", (group_id, user_id)
-        )
+        cur.execute("DELETE FROM routes WHERE group_id = ? AND user_id = ?", (group_id, user_id))
         cur.execute("DELETE FROM route_groups WHERE id = ? AND user_id = ?", (group_id, user_id))
     return True
 
@@ -1076,8 +1074,15 @@ def create_route(
                                 destination_lat, destination_lng)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, group_id, name.strip(), origin_lat, origin_lng, destination_lat,
-             destination_lng),
+            (
+                user_id,
+                group_id,
+                name.strip(),
+                origin_lat,
+                origin_lng,
+                destination_lat,
+                destination_lng,
+            ),
         )
         route_id = int(cur.lastrowid or 0)
         for seq, (lat, lng) in enumerate(waypoints, start=1):
