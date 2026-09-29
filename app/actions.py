@@ -47,4 +47,8 @@ def apply(user_id: int, kind: str, key: Any) -> int:
         return int(db.disable_reminder(int(key), user_id))
     if kind == "note":
         return int(db.delete_note(user_id, int(key)))
+    if kind == "route":
+        return int(db.delete_route(int(key), user_id))
+    if kind == "route_group":
+        return int(db.delete_route_group(int(key), user_id))
     return 0

@@ -27,7 +27,7 @@ from typing import Any
 import feedparser
 import httpx
 
-from app import actions, db
+from app import actions, db, routes
 from app.log import get_logger, log_event
 from app.reminders import describe_when, format_reminder, parse_due
 from app.tz import user_zone
@@ -600,6 +600,131 @@ async def delete_note(ctx: ToolContext, args: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------
+# routes (wizard is stateful; these tools only start/cancel it or do CRUD)
+# --------------------------------------------------------------------------
+
+
+def create_route_group(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Start route creation. Sets the wizard to capture coordinates."""
+    name = args.get("name")
+    if name and isinstance(name, str) and name.strip():
+        routes.begin_points(ctx.user_id, name.strip()[:60])
+        return "Oke. Sekarang kirim 📍 lokasi titik A."
+    routes.set_wizard(
+        ctx.user_id,
+        {
+            "phase": "name",
+            "kind": "create",
+            "group_id": None,
+            "group_name": "",
+            "alt_name": "",
+        },
+    )
+    return "🛣️ Create Route\n\nNama route:"
+
+
+def add_route_alternative(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Add a new alternative route inside an existing group."""
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValidationError("name (nama route group) wajib diisi")
+    group = db.route_group_by_name(ctx.user_id, name)
+    if group is None:
+        return (
+            f"Tidak ada route group \"{name}\". Coba \"lihat route\" untuk daftarnya, "
+            "atau \"buat route ...\" untuk bikin baru."
+        )
+    alternative = args.get("alternative")
+    if alternative is not None and isinstance(alternative, str) and alternative.strip():
+        routes.begin_points(
+            ctx.user_id, group["name"], alt_name=alternative.strip()[:60],
+            kind="alt", group_id=group["id"],
+        )
+        return "Oke. Sekarang kirim 📍 lokasi titik A."
+    routes.set_wizard(
+        ctx.user_id,
+        {
+            "phase": "alt_name",
+            "kind": "alt",
+            "group_id": group["id"],
+            "group_name": group["name"],
+            "alt_name": "",
+        },
+    )
+    return f"🛣️ Tambah Alternatif\n\nUntuk route:\n{group['name']}\n\nNama alternatif:"
+
+
+def list_routes_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+    return _truncate(routes.list_routes_text(ctx.user_id))
+
+
+def show_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return _truncate(routes.list_routes_text(ctx.user_id))
+    group = db.route_group_by_name(ctx.user_id, name)
+    if group is None:
+        return f"Tidak ketemu route \"{name}\". Coba \"lihat route\" untuk daftarnya."
+    return _truncate(routes.show_route_text(ctx.user_id, group))
+
+
+def rename_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+    name = args.get("name")
+    new_name = args.get("new_name")
+    if not isinstance(name, str) or not isinstance(new_name, str) or not new_name.strip():
+        raise ValidationError("name dan new_name wajib diisi")
+    target = db.route_by_name(ctx.user_id, name)
+    if target is not None and db.rename_route(target["id"], ctx.user_id, new_name):
+        return f"Route \"{name}\" di-rename jadi \"{new_name.strip()}\"."
+    group = db.route_group_by_name(ctx.user_id, name)
+    if group is not None and db.rename_route_group(group["id"], ctx.user_id, new_name):
+        return f"Route group \"{name}\" di-rename jadi \"{new_name.strip()}\"."
+    return f"Tidak ketemu route atau route group bernama \"{name}\"."
+
+
+def delete_route_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Delete one clear route directly; a group with many alternatives (or a
+    "delete all") is staged and confirmed through /hapus."""
+    if args.get("all"):
+        groups = db.list_route_groups(ctx.user_id)
+        if not groups:
+            return "Belum ada route untuk dihapus."
+        targets = [(g["id"], f"{g['name']} ({g['route_count']} alternatif)") for g in groups]
+        actions.stage(ctx.user_id, "route_group", targets)
+        return actions.proposal_text(targets)
+
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValidationError("name (atau all=true) wajib diisi")
+    route = db.route_by_name(ctx.user_id, name)
+    if route is not None and db.delete_route(route["id"], ctx.user_id):
+        return f"Route \"{name}\" dihapus."
+
+    group = db.route_group_by_name(ctx.user_id, name)
+    if group is None:
+        return f"Tidak ketemu route \"{name}\". Coba \"lihat route\" untuk daftarnya."
+    entries = db.list_routes(group["id"], ctx.user_id)
+    if not entries:
+        db.delete_route_group(group["id"], ctx.user_id)
+        return f"Group route kosong \"{name}\" dihapus."
+    if len(entries) == 1 and not entries[0]["name"]:
+        db.delete_route(entries[0]["id"], ctx.user_id)
+        return f"Route \"{name}\" dihapus."
+    targets = [
+        (g["id"], f"{g['name']} ({g['route_count']} alternatif)")
+        for g in db.list_route_groups(ctx.user_id)
+        if g["id"] == group["id"]
+    ]
+    actions.stage(ctx.user_id, "route_group", targets)
+    return actions.proposal_text(targets)
+
+
+def cancel_route_creation(ctx: ToolContext, args: dict[str, Any]) -> str:
+    routes.clear_wizard(ctx.user_id)
+    return "Pembuatan route dibatalkan."
+
+
+# --------------------------------------------------------------------------
 # registry
 # --------------------------------------------------------------------------
 
@@ -836,6 +961,119 @@ TOOLS: tuple[Tool, ...] = (
             "required": [],
         },
         handler=delete_note,
+    ),
+    Tool(
+        name="create_route_group",
+        description=(
+            "Mulai membuat route baru. Jangan pernah mengarang koordinat: setelah "
+            "tool ini, bot akan meminta user mengirim nama route dan lokasi lewat "
+            "Telegram Location. Kalau name tidak diberikan, bot menanyakan dulu. "
+            "Jangan bilang route sudah jadi sebelum /simpan dikonfirmasi."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Nama route group, misal 'Pulang' atau 'Ke kantor'.",
+                }
+            },
+            "required": [],
+        },
+        handler=create_route_group,
+    ),
+    Tool(
+        name="add_route_alternative",
+        description=(
+            "Mulai merekam alternatif baru untuk route group yang sudah ada "
+            "(misal 'tambah alternatif route pulang'). Bot akan meminta user "
+            "mengirim lokasi via Telegram Location. Jangan mengarang koordinat."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Nama route group, misal 'Pulang'.",
+                },
+                "alternative": {
+                    "type": "string",
+                    "description": "Label alternatif, misal 'via TB Simatupang'.",
+                },
+            },
+            "required": ["name"],
+        },
+        handler=add_route_alternative,
+    ),
+    Tool(
+        name="list_routes",
+        description="Daftar semua route group milik user beserta alternatifnya.",
+        parameters={"type": "object", "properties": {}},
+        handler=list_routes_tool,
+    ),
+    Tool(
+        name="show_route",
+        description="Lihat rincian satu route group (koordinat tiap titik).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Nama route group, misal 'Pulang'. Kosongkan untuk daftar.",
+                }
+            },
+            "required": [],
+        },
+        handler=show_route_tool,
+    ),
+    Tool(
+        name="rename_route",
+        description="Ganti nama route (alternatif) atau route group milik user.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Nama lama route atau route group.",
+                },
+                "new_name": {"type": "string", "description": "Nama baru."},
+            },
+            "required": ["name", "new_name"],
+        },
+        handler=rename_route_tool,
+    ),
+    Tool(
+        name="delete_route",
+        description=(
+            "Hapus route milik user. Kalau 'name' menunjuk SATU route yang jelas, "
+            "langsung dihapus. Kalau name menunjuk group dengan banyak alternatif "
+            "(atau all=true), tool hanya menyiapkan daftar dan minta user mengirim "
+            "/hapus untuk konfirmasi (atau /batal). Jangan bilang sudah terhapus "
+            "sebelum hasil tool berhasil."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Nama route alternatif atau route group, misal 'via Pasar Minggu'."
+                    ),
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "True untuk menghapus SEMUA route milik user.",
+                },
+            },
+            "required": [],
+        },
+        handler=delete_route_tool,
+    ),
+    Tool(
+        name="cancel_route_creation",
+        description="Batalkan pembuatan route yang sedang berlangsung (state wizard).",
+        parameters={"type": "object", "properties": {}},
+        handler=cancel_route_creation,
     ),
 )
 

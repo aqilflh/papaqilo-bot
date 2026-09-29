@@ -16,6 +16,7 @@ agent/
 │   ├── tools.py       # implementasi & skema tool
 │   ├── actions.py     # penghapusan berkonfirmasi (/hapus)
 │   ├── shifts.py      # jadwal jaga, impor, teks jadwal, pengingat shift
+│   ├── routes.py      # wizard route: nama -> 📍 lokasi -> simpan
 │   ├── shift_parser.py# parse teks jadwal jaga
 │   ├── recap.py       # kumpulkan data, minta LLM merangkum
 │   ├── scheduler.py   # tick tiap 60 detik
@@ -115,6 +116,7 @@ Orang yang belum terdaftar tidak mendapat balasan, tapi id-nya muncul di log ser
 | `/simpan` | simpan jadwal yang sudah dipreview |
 | `/batal` | batal simpan jadwal / batal penghapusan |
 | `/hapus` | konfirmasi penghapusan yang diusulkan lewat chat |
+| `/routes` | daftar route tersimpan |
 | `/adduser <id> <nama>` | (owner) tambah pengguna |
 | `/removeuser <id>` | (owner) hapus pengguna |
 | `/users` | (owner) daftar pengguna |
@@ -131,6 +133,10 @@ tempel jadwal jaga           -> preview per minggu, lalu /simpan
 hapus semua jadwal jaga      -> usulkan daftar, minta /hapus
 hapus semua catatan          -> usulkan daftar, minta /hapus
 hapus semua pengingat        -> usulkan daftar, minta /hapus
+buat route pulang            -> wizard: nama -> 📍 A -> waypoint -> done -> 📍 B -> /simpan
+tambah alternatif route pulang via TB Simatupang -> wizard alternatif
+lihat route gue              -> list_routes (atau /routes)
+hapus route via Pasar Minggu -> delete_route (group besar minta /hapus)
 ```
 
 Penghapusan lewat chat selalu **berkonfirmasi**: tool hanya menyiapkan daftar,
@@ -194,5 +200,11 @@ Phase 9 (shift jaga):
 15. [x] Hapus berkonfirmasi via chat + `/hapus` untuk jadwal/pengingat/catatan (manual).
 
 Phase 9 selesai & terverifikasi manual.
+
+Phase 10 (route):
+
+16. [ ] "Buat route ..." → wizard nama → 📍 titik A → waypoint 📍 → "done" → 📍 titik B → `/simpan` tersimpan.
+17. [ ] "Tambah alternatif" untuk group yang sama menyimpan label alternatif.
+18. [ ] `/routes`, "lihat route X", "rename route", "hapus route" berfungsi dan ter-scope per user.
 
 Status: [x] = terverifikasi, [ ] = belum diuji live.

@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from app import actions, db, shifts
+from app import actions, db, routes, shifts
 from app.agent import Agent, run_and_store, user_zone
 from app.log import get_logger, log_event
 from app.recap import build_recap
@@ -70,6 +70,12 @@ Jadwal shift:
 /jam_eve HH:MM - jam pesan pengingat D-1 (default 20:00)
 /jam <shift> HH:MM-HH:MM - jam shift (misal: /jam malam 22:00-06:00)
 /sebelum <menit|off> - ingatkan beberapa menit sebelum shift mulai
+
+Route:
+Bilang aja "buat route pulang", lalu ikuti langkah bot: nama → kirim lokasi
+titik lewat 📍 Telegram → "done" → titik B → simpan. 
+/routes - daftar route kamu
+/tambahan: "tambah alternatif route ...", "lihat route ...", "hapus route ..."
 
 Owner:
 /adduser <id> <nama> - tambah pengguna
@@ -172,6 +178,7 @@ class Bot:
         application.add_handler(CommandHandler("simpan", self.cmd_simpan))
         application.add_handler(CommandHandler("batal", self.cmd_batal))
         application.add_handler(CommandHandler("hapus", self.cmd_hapus))
+        application.add_handler(CommandHandler("routes", self.cmd_routes))
         application.add_handler(CommandHandler("jadwal_saya", self.cmd_jadwal_saya))
         application.add_handler(CommandHandler("jaga", self.cmd_jaga))
         application.add_handler(CommandHandler("hapus_jaga", self.cmd_hapus_jaga))
@@ -188,6 +195,7 @@ class Bot:
             CallbackQueryHandler(self.on_shift_callback, pattern=r"^shift_(save|cancel):\d+")
         )
         application.add_handler(CallbackQueryHandler(self.on_any_callback))
+        application.add_handler(MessageHandler(filters.LOCATION, self.on_location))
         # Must stay last: it catches every non-command text message.
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
 
@@ -357,9 +365,30 @@ class Bot:
         if not await self._guard(update):
             return
         user_id = update.effective_user.id
+        wizard = routes.get_wizard(user_id)
+        if wizard is not None and wizard["phase"] == "confirm":
+            try:
+                reply_text = routes.save_wizard(user_id, wizard)
+            except Exception as exc:
+                log_event(
+                    log,
+                    logging.ERROR,
+                    "route_save_failed",
+                    user_id=user_id,
+                    error=type(exc).__name__,
+                    detail=repr(exc),
+                )
+                await self._reply(update, "Gagal menyimpan route. Coba mulai ulang ya.")
+                return
+            await self._reply(update, reply_text)
+            return
         parsed = shifts.pending_import(user_id)
         if parsed is None:
-            await self._reply(update, "Sesi import sudah kedaluwarsa, tempel ulang jadwalmu.")
+            await self._reply(
+                update,
+                "Tidak ada yang menunggu disimpan, atau sudah kedaluwarsa. "
+                "/jadwal buat panduan import.",
+            )
             return
         try:
             saved = shifts.apply_import(user_id, parsed)
@@ -378,6 +407,11 @@ class Bot:
         log_event(log, logging.INFO, "shift_import_saved", user_id=user_id, saved=saved)
         await self._reply(update, f"Jadwal tersimpan: {saved} shift. Cek /besok.")
 
+    async def cmd_routes(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        await self._reply(update, routes.list_routes_text(update.effective_user.id))
+
     async def cmd_hapus(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         """Confirm a deletion proposed via chat (the agent only stages)."""
         if not await self._guard(update):
@@ -393,7 +427,8 @@ class Bot:
             if actions.apply(user_id, kind, key):
                 deleted += 1
         actions.clear(user_id)
-        noun = {"shift": "jadwal", "reminder": "pengingat", "note": "catatan"}.get(kind, "item")
+        noun = {"shift": "jadwal", "reminder": "pengingat", "note": "catatan",
+            "route": "route", "route_group": "route"}.get(kind, "item")
         log_event(
             log,
             logging.INFO,
@@ -413,12 +448,19 @@ class Bot:
             return
         user_id = update.effective_user.id
         delete_staged = actions.pending(user_id) is not None
+        import_pending = shifts.pending_import(user_id) is not None
+        wizard_active = routes.get_wizard(user_id) is not None
         shifts.clear_pending(user_id)
         actions.clear(user_id)
+        routes.clear_wizard(user_id)
         if delete_staged:
             await self._reply(update, "Penghapusan dibatalkan.")
-        else:
+        elif import_pending:
             await self._reply(update, "Import jadwal dibatalkan.")
+        elif wizard_active:
+            await self._reply(update, "Pembuatan route dibatalkan.")
+        else:
+            await self._reply(update, "Tidak ada yang sedang berjalan.")
 
     async def cmd_besok(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
@@ -800,6 +842,17 @@ class Bot:
         user_id = update.effective_user.id
         text = update.effective_message.text or ""
 
+        # An active route wizard owns the conversation: names, gates and the
+        # save confirm are plain code, not LLM guessing.
+        wizard = routes.get_wizard(user_id)
+        if wizard is not None:
+            reply_text, should_save = routes.handle_wizard_text(wizard, text)
+            if should_save:
+                await self._reply(update, routes.save_wizard(user_id, wizard))
+            else:
+                await self._reply(update, reply_text)
+            return
+
         # A pasted schedule is data, not chat: parse it in plain code, never
         # send it to the LLM, and never store it in the chat history.
         if count_matching_lines(text) >= 5:
@@ -850,6 +903,32 @@ class Bot:
             tokens_out=result.tokens_out,
         )
         await self._reply(update, result.text)
+
+    async def on_location(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        user_id = update.effective_user.id
+        wizard = routes.get_wizard(user_id)
+        if wizard is None:
+            await self._reply(
+                update,
+                "Belum ada pembuatan route yang aktif. Bilang "
+                "\"buat route ...\" untuk mulai.",
+            )
+            return
+        loc = update.effective_message.location
+        if loc is None:
+            return
+        reply_text, _ = routes.record_location(wizard, loc.latitude, loc.longitude)
+        log_event(
+            log,
+            logging.INFO,
+            "route_location",
+            user_id=user_id,
+            sub=wizard.get("sub"),
+            phase=wizard.get("phase"),
+        )
+        await self._reply(update, reply_text)
 
     async def on_error(self, update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         """Swallow library-level errors so polling keeps running.

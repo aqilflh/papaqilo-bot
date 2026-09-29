@@ -129,11 +129,48 @@ CREATE TABLE shift_reminders_sent (
 );
 """
 
+_MIGRATION_4 = """
+CREATE TABLE route_groups (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  description TEXT,
+  created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_route_groups_user ON route_groups(user_id, name);
+
+CREATE TABLE routes (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  group_id         INTEGER NOT NULL REFERENCES route_groups(id) ON DELETE CASCADE,
+  name             TEXT NOT NULL,            -- alternative label, e.g. 'via Pasar Minggu'
+  origin_lat       REAL,
+  origin_lng       REAL,
+  destination_lat  REAL,
+  destination_lng  REAL,
+  created_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at       TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_routes_user ON routes(user_id, group_id);
+
+CREATE TABLE route_waypoints (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  route_id   INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+  sequence   INTEGER NOT NULL,
+  latitude   REAL NOT NULL,
+  longitude  REAL NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_waypoints_route ON route_waypoints(route_id, sequence);
+"""
+
 # Each entry is (target_user_version, sql). Append only; never edit a shipped one.
 MIGRATIONS: Sequence[tuple[int, str]] = (
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
     (3, _MIGRATION_3),
+    (4, _MIGRATION_4),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -316,8 +353,15 @@ def remove_user(user_id: int) -> int:
             "shifts",
             "shift_settings",
             "shift_reminders_sent",
+            "routes",
+            "route_groups",
         ):
             cur.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+        cur.execute(
+            "DELETE FROM route_waypoints WHERE route_id IN "
+            "(SELECT id FROM routes WHERE user_id = ?)",
+            (user_id,),
+        )
         cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
     return removed
 
@@ -932,3 +976,180 @@ def release_shift_reminder(user_id: int, kind: str, target_date: str) -> None:
             "DELETE FROM shift_reminders_sent WHERE user_id = ? AND kind = ? AND target_date = ?",
             (user_id, kind, target_date),
         )
+
+
+# --------------------------------------------------------------------------
+# routes (route groups -> alternatives -> waypoints)
+# --------------------------------------------------------------------------
+
+
+def create_route_group(user_id: int, name: str, description: str | None = None) -> int:
+    with _cursor() as cur:
+        cur.execute(
+            "INSERT INTO route_groups (user_id, name, description) VALUES (?, ?, ?)",
+            (user_id, name.strip(), description),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def get_route_group(group_id: int, user_id: int | None = None) -> dict[str, Any] | None:
+    sql = "SELECT * FROM route_groups WHERE id = ?"
+    params: list[Any] = [group_id]
+    if user_id is not None:
+        sql += " AND user_id = ?"
+        params.append(user_id)
+    with _cursor() as cur:
+        row = cur.execute(sql, params).fetchone()
+    return _row_to_dict(row)
+
+
+def route_group_by_name(user_id: int, name: str) -> dict[str, Any] | None:
+    with _cursor() as cur:
+        row = cur.execute(
+            "SELECT * FROM route_groups WHERE user_id = ? AND lower(name) = lower(?)",
+            (user_id, name.strip()),
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def list_route_groups(user_id: int) -> list[dict[str, Any]]:
+    with _cursor() as cur:
+        rows = cur.execute(
+            """
+            SELECT g.*, COUNT(r.id) AS route_count
+            FROM route_groups g
+            LEFT JOIN routes r ON r.group_id = g.id
+            WHERE g.user_id = ?
+            GROUP BY g.id
+            ORDER BY g.name COLLATE NOCASE ASC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def rename_route_group(group_id: int, user_id: int, name: str) -> bool:
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE route_groups SET name = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND user_id = ?",
+            (name.strip(), group_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_route_group(group_id: int, user_id: int) -> bool:
+    """Delete a group and every route + waypoint under it."""
+    with _transaction() as cur:
+        groupe = cur.execute(
+            "SELECT id FROM route_groups WHERE id = ? AND user_id = ?", (group_id, user_id)
+        ).fetchone()
+        if groupe is None:
+            return False
+        cur.execute(
+            "DELETE FROM route_waypoints WHERE route_id IN "
+            "(SELECT id FROM routes WHERE group_id = ? AND user_id = ?)",
+            (group_id, user_id),
+        )
+        cur.execute(
+            "DELETE FROM routes WHERE group_id = ? AND user_id = ?", (group_id, user_id)
+        )
+        cur.execute("DELETE FROM route_groups WHERE id = ? AND user_id = ?", (group_id, user_id))
+    return True
+
+
+def create_route(
+    user_id: int,
+    group_id: int,
+    name: str,
+    origin_lat: float,
+    origin_lng: float,
+    destination_lat: float,
+    destination_lng: float,
+    waypoints: Sequence[tuple[float, float]],
+) -> int:
+    """Persist one alternative route (origin, waypoints, destination)."""
+    with _transaction() as cur:
+        cur.execute(
+            """
+            INSERT INTO routes (user_id, group_id, name, origin_lat, origin_lng,
+                                destination_lat, destination_lng)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, group_id, name.strip(), origin_lat, origin_lng, destination_lat,
+             destination_lng),
+        )
+        route_id = int(cur.lastrowid or 0)
+        for seq, (lat, lng) in enumerate(waypoints, start=1):
+            cur.execute(
+                "INSERT INTO route_waypoints (route_id, sequence, latitude, longitude) "
+                "VALUES (?, ?, ?, ?)",
+                (route_id, seq, lat, lng),
+            )
+    return route_id
+
+
+def get_route(route_id: int, user_id: int | None = None) -> dict[str, Any] | None:
+    sql = "SELECT * FROM routes WHERE id = ?"
+    params: list[Any] = [route_id]
+    if user_id is not None:
+        sql += " AND user_id = ?"
+        params.append(user_id)
+    with _cursor() as cur:
+        row = cur.execute(sql, params).fetchone()
+    return _row_to_dict(row)
+
+
+def route_by_name(user_id: int, name: str) -> dict[str, Any] | None:
+    with _cursor() as cur:
+        row = cur.execute(
+            "SELECT * FROM routes WHERE user_id = ? AND lower(name) = lower(?)",
+            (user_id, name.strip()),
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def list_routes(group_id: int, user_id: int) -> list[dict[str, Any]]:
+    with _cursor() as cur:
+        rows = cur.execute(
+            "SELECT * FROM routes WHERE group_id = ? AND user_id = ? ORDER BY id ASC",
+            (group_id, user_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def rename_route(route_id: int, user_id: int, name: str) -> bool:
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE routes SET name = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND user_id = ?",
+            (name.strip(), route_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_route(route_id: int, user_id: int) -> bool:
+    """Delete one alternative route (and its waypoints)."""
+    with _transaction() as cur:
+        owned = cur.execute(
+            "SELECT id FROM routes WHERE id = ? AND user_id = ?", (route_id, user_id)
+        ).fetchone()
+        if owned is None:
+            return False
+        cur.execute("DELETE FROM route_waypoints WHERE route_id = ?", (route_id,))
+        cur.execute("DELETE FROM routes WHERE id = ? AND user_id = ?", (route_id, user_id))
+    return True
+
+
+def list_waypoints(route_id: int, user_id: int) -> list[dict[str, Any]]:
+    with _cursor() as cur:
+        rows = cur.execute(
+            """
+            SELECT w.* FROM route_waypoints w
+            JOIN routes r ON r.id = w.route_id
+            WHERE w.route_id = ? AND r.user_id = ?
+            ORDER BY w.sequence ASC
+            """,
+            (route_id, user_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
