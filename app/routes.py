@@ -126,10 +126,10 @@ def _wp_noun(n: int) -> str:
 
 
 def route_summary(route: dict[str, Any], waypoints: list[dict[str, Any]]) -> str:
-    """One-line: `via Pasar Minggu (A -> 2 waypoint -> B)`."""
+    """One-line: `via Pasar Minggu (A → 2 waypoints → B)`."""
     label = route["name"] or "(utama)"
     wps = len(waypoints)
-    return f"{label} (A → {_wp_noun(wps)} → B)"
+    return f"{label} (A → {wps} {_wp_noun(wps)} → B)"
 
 
 def list_routes_text(user_id: int) -> str:

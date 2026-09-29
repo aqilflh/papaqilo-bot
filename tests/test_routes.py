@@ -167,6 +167,7 @@ def test_list_and_show_tools():
     _seed_route("via Pasar Minggu")
     reply = _run("list_routes", {})
     assert "Pulang" in reply and "via Pasar Minggu" in reply
+    assert "2 waypoints" in reply
     detail = _run("show_route", {"name": "Pulang"})
     assert "-6.135000" in detail and "📍 B" in detail
 
