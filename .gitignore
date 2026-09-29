@@ -20,3 +20,28 @@ __pycache__/
 .idea/
 .DS_Store
 *.swp
+
+# Stale flat-layout duplicates at repo root (source of truth: app/ and tests/).
+# These are leftovers from the pre-package layout; removing them from the
+# working tree is fine, but ignore them so `git add -A` never re-adds them.
+/__init__.py
+/actions.py
+/agent.py
+/backup.py
+/bot.py
+/config.py
+/conftest.py
+/db.py
+/log.py
+/main.py
+/recap.py
+/reminders.py
+/routes.py
+/scheduler.py
+/shift_parser.py
+/shifts.py
+/tools.py
+/tz.py
+/HOW_IT_WORKS.md
+/fixtures/
+/test_*.py
