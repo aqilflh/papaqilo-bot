@@ -40,7 +40,11 @@ def test_compute_route_requires_key():
     with pytest.raises(geo.RouteError):
         asyncio.run(
             geo.compute_route(
-                _client(lambda r: httpx.Response(200, json={})), "", (-6.1, 106.7), [], (-6.13, 106.73)
+                _client(lambda r: httpx.Response(200, json={})),
+                "",
+                (-6.1, 106.7),
+                [],
+                (-6.13, 106.73),
             )
         )
 
@@ -63,6 +67,4 @@ def test_compute_route_http_error_raises():
         return httpx.Response(400, json={"error": {"message": "bad"}})
 
     with pytest.raises(geo.RouteError):
-        asyncio.run(
-            geo.compute_route(_client(handler), "key", (-6.1, 106.7), [], (-6.13, 106.73))
-        )
+        asyncio.run(geo.compute_route(_client(handler), "key", (-6.1, 106.7), [], (-6.13, 106.73)))

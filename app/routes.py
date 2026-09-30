@@ -239,6 +239,50 @@ def status_reply(user_id: int, text: str) -> str | None:
     return list_routes_text(user_id)
 
 
+#: Words that mark a travel-time ("berapa lama...") question. Kept narrow so
+#: ordinary chat about time ("udah lama nih") is never swallowed.
+_ETA_INTENT = (
+    "eta",
+    "waktu tempuh",
+    "berapa lama",
+    "berapa lam",
+    "tempuh",
+    "estimasi",
+    "diperkirakan",
+    "berapa menit",
+    "berapa jam",
+    "jaraknya",
+    "jarak tempuh",
+)
+
+
+def eta_target(user_id: int, text: str) -> dict[str, Any] | None:
+    """The route group a travel-time question asks about, else None.
+
+    ETA answers must never come from the model's memory: it repeatedly claimed
+    "nggak bisa hitung ETA" after one early failure even once the tool worked.
+    This detects the question so the bot can answer from Google deterministically.
+    """
+    lowered = text.lower()
+    if any(word in lowered for word in _MUTATION_WORDS):
+        return None
+    if not any(word in lowered for word in _ETA_INTENT):
+        return None
+    groups = db.list_route_groups(user_id)
+    if not groups:
+        return None
+    for group in groups:
+        if group["name"].lower() in lowered:
+            return group
+    for group in groups:
+        if any(len(token) >= 4 and token in lowered for token in group["name"].lower().split()):
+            return group
+    # "berapa lama route gue?" with exactly one stored group is unambiguous.
+    if ("route" in lowered or "rute" in lowered) and len(groups) == 1:
+        return groups[0]
+    return None
+
+
 def preview_text(state: dict[str, Any]) -> str:
     """Preview right before saving, ending with the /simpan ask."""
     wps = state["waypoints"]

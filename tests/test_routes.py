@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 
 from app import actions, db, routes
@@ -333,3 +334,39 @@ def test_route_metrics_show_in_list_and_detail():
     detail = _run("show_route", {"name": "Pulang"})
     assert "ETA: ⏱️ ±45 menit • 9,7 km" in detail
     assert gid == db.route_group_by_name(OWNER, "Pulang")["id"]
+
+
+def test_eta_query_classification():
+    _seed_route("via Pasar Minggu")
+    assert routes.eta_target(OWNER, "berapa lama ini klo pulang?") is not None
+    assert routes.eta_target(OWNER, "eta route pulang") is not None
+    assert routes.eta_target(OWNER, "waktu tempuh route gue") is not None
+    assert routes.eta_target(OWNER, "buat route pulang") is None  # mutation
+    assert routes.eta_target(OWNER, "hapus route pulang") is None  # mutation
+    assert routes.eta_target(OWNER, "berapa lama nunggu kereta?") is None  # no route ref
+    assert routes.eta_target(OWNER, "beli susu dong") is None  # no ETA intent
+
+
+def _eta_mock(request):
+    return httpx.Response(
+        200,
+        json={"routes": [{"distanceMeters": 9736, "duration": "2700s"}]},
+    )
+
+
+def test_on_text_eta_plain_code():
+    _seed_route("via Pasar Minggu")
+    replies: list[str] = []
+    bot = _bot(replies)
+    bot.config = type("C", (), {"owner_telegram_id": OWNER, "google_maps_api_key": "test-key"})()
+    bot.http = httpx.AsyncClient(transport=httpx.MockTransport(_eta_mock))
+    asyncio.run(bot.on_text(_TextUpdate("berapa lama ini klo pulang?"), None))
+    assert replies, "pertanyaan ETA harus dijawab langsung, bukan lewat LLM"
+    assert replies[0].startswith("⏱️ ETA Pulang:")
+    assert "±45 menit" in replies[0] and "9,7 km" in replies[0]
+    rid = db.route_by_name(OWNER, "via Pasar Minggu")["id"]
+    stored = db.get_route(rid, OWNER)
+    assert stored["duration_seconds"] == 2700
+    assert stored["distance_meters"] == 9736
+    hist = [m["content"] for m in db.recent_messages(OWNER, 5)]
+    assert any("±45 menit" in c for c in hist)

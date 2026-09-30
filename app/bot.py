@@ -426,9 +426,7 @@ class Bot:
         route = db.get_route(route_id, user_id)
         if route is None:
             return
-        waypoints = [
-            (w["latitude"], w["longitude"]) for w in db.list_waypoints(route_id, user_id)
-        ]
+        waypoints = [(w["latitude"], w["longitude"]) for w in db.list_waypoints(route_id, user_id)]
         try:
             metrics = await geo.compute_route(
                 self.http,
@@ -449,6 +447,55 @@ class Bot:
         )
         await self._reply(update, text)
         db.add_message(user_id, "assistant", text)
+
+    async def _route_eta_reply(self, user_id: int, group: dict[str, Any]) -> str | None:
+        """ETA + distance for every alternative under a route group.
+
+        Mirror of the ``route_eta`` tool, reused by the deterministic text
+        interceptor so a question like "berapa lama route ini?" gets a real
+        answer even when the model would rather guess from memory.
+        """
+        api_key = getattr(self.config, "google_maps_api_key", "") or ""
+        if not api_key:
+            return (
+                "ETA belum aktif: GOOGLE_MAPS_API_KEY belum diisi di server. "
+                "Route & koordinatnya tetap tersimpan."
+            )
+        routes_in_group = db.list_routes(group["id"], user_id)
+        if not routes_in_group:
+            return None
+
+        lines = [f"⏱️ ETA {group['name']}:"]
+        for route in routes_in_group:
+            alt = route["name"] or "(utama)"
+            if route["origin_lat"] is None or route["destination_lat"] is None:
+                lines.append(f"- {alt}: koordinat belum lengkap.")
+                continue
+            waypoints = [
+                (w["latitude"], w["longitude"]) for w in db.list_waypoints(route["id"], user_id)
+            ]
+            try:
+                metrics = await geo.compute_route(
+                    self.http,
+                    api_key,
+                    (route["origin_lat"], route["origin_lng"]),
+                    waypoints,
+                    (route["destination_lat"], route["destination_lng"]),
+                )
+            except geo.RouteError as exc:
+                log_event(
+                    log, logging.WARNING, "route_eta_skipped", user_id=user_id, error=str(exc)
+                )
+                lines.append(f"- {alt}: gagal menghitung ETA.")
+                continue
+            db.set_route_metrics(
+                route["id"], user_id, metrics["distance_meters"], metrics["duration_seconds"]
+            )
+            lines.append(
+                f"- {alt}: ±{routes.fmt_duration(metrics['duration_seconds'])} • "
+                f"{routes.fmt_distance(metrics['distance_meters'])}"
+            )
+        return "\n".join(lines)
 
     async def cmd_routes(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
@@ -907,6 +954,19 @@ class Bot:
             else:
                 await self._reply(update, reply_text)
             return
+
+        # Travel-time questions ("berapa lama...") are answered deterministically
+        # too: the model once said "ETA belum aktif" from stale memory and kept
+        # repeating it even after the API key was configured. ETA only ever comes
+        # from Google via plain code; the meeting must run before status_reply
+        # below because "berapa" is also a status word.
+        eta_group = routes.eta_target(user_id, text)
+        if eta_group is not None:
+            reply = await self._route_eta_reply(user_id, eta_group)
+            if reply is not None:
+                await self._reply(update, reply)
+                db.add_message(user_id, "assistant", reply)
+                return
 
         # Route status questions are answered in plain code from the DB, never
         # by the LLM: the model was inventing "belum ada route" from memory.
