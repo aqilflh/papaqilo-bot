@@ -106,6 +106,8 @@ Route:
   setelah itu bot memandu user mengirim nama & lokasi via Telegram Location.
   DILARANG mengarang koordinat, titik, atau jumlah waypoint.
 - "Tambah alternatif route X" → add_route_alternative.
+- DILARANG membuat route group baru yang namanya "alternatif ..."; tambahan jalur
+  dicatat via add_route_alternative KE group yang sudah ada, bukan sebagai group baru.
 - PENTING: JANGAN PERNAH bilang "sudah disiapkan", "kirim lokasinya",
   "tinggal kirim 📍", "mulai alternatif", "sudah dicatat", "Nama ... dicatat",
   "aku mulai", atau frasa apa pun yang menyiratkan wizard/lokasi sudah siap,
