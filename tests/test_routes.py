@@ -428,6 +428,28 @@ def test_route_action_start_group_name_contains_via():
     assert routes.get_wizard(OWNER)["group_id"] == gid
 
 
+def test_route_action_start_wordy_prelude():
+    _seed_route("via Pasar Minggu")  # single group "Pulang"
+    reply = routes.route_action_start(OWNER, "oke mau buat alternatif nya untuk rute itu")
+    assert reply is not None and "Nama alternatif" in reply
+    w = routes.get_wizard(OWNER)
+    assert (
+        w is not None
+        and w["phase"] == "alt_name"
+        and w["group_id"] == db.route_group_by_name(OWNER, "Pulang")["id"]
+    )
+
+
+def test_route_action_start_plain_name_answer():
+    _seed_route("via Pasar Minggu")  # single group "Pulang"
+    assert routes.get_wizard(OWNER) is None
+    reply = routes.route_action_start(OWNER, "namanya adalah via shell")
+    assert reply is not None and "via shell" in reply
+    w = routes.get_wizard(OWNER)
+    assert w is not None and w["kind"] == "alt" and w["alt_name"] == "via shell"
+    assert w["phase"] == "points" and w["sub"] == "origin"
+
+
 def test_on_text_route_action_starts_wizard():
     _seed_route("via Pasar Minggu")
     replies: list[str] = []

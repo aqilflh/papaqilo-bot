@@ -315,6 +315,23 @@ def _resolve_group(groups: list[dict[str, Any]], ref: str) -> dict[str, Any] | N
     return None
 
 
+_ACTION_FILLERS = (
+    r"(?:oke|ok|okay|oooke|ya|yuk|yook|mari|coba|mau|mw|kita|tolong|"
+    r"lanjut|nih|deh|dong|bro|bang)"
+)
+_TAIL_FILLERS = r"(?:nya|nih|deh|dong|dulu|ya|aja|bang|bro)"
+_PRONOUN_GROUP = {"itu", "ini", "nya", "sana", "situ", "sini", "tersebut", "itu aja", "itu doang"}
+
+
+def _strip_fillers(text: str) -> str:
+    """Drop leading filler words while preserving the rest's original case."""
+    t = text.strip()
+    while re.match(rf"^{_ACTION_FILLERS}\s*[,]?\s+", t, re.IGNORECASE):
+        t = re.sub(rf"^{_ACTION_FILLERS}\s*[,]?\s+", "", t, count=1, flags=re.IGNORECASE)
+        t = t.lstrip(",").strip()
+    return t
+
+
 def route_action_start(user_id: int, text: str) -> str | None:
     """Deterministically begin the wizard for a plain create/alternative ask.
 
@@ -325,21 +342,21 @@ def route_action_start(user_id: int, text: str) -> str | None:
     rejected. Returns None when the wording is not a clean, parseable mutation
     (then the LLM runs).
     """
+    t = _strip_fillers(text)
     groups = db.list_route_groups(user_id)
 
     # "tambah alternatif [route] <group> via <label>" / "... <label>" / "di <group>"
     m = re.match(
         r"^(?:tambah|buat|bikin)\s+alternatif(?:\s+(?:route|rute))?\s+(.+)$",
-        text,
+        t,
         re.IGNORECASE,
     )
     if m:
+        rest = re.sub(rf"^{_TAIL_FILLERS}\s+", "", m.group(1), count=1, flags=re.IGNORECASE).strip()
         rest = re.sub(
-            r"^(?:(?:route|rute)\s+)?(?:di|ke|untuk)\s+",
-            "",
-            m.group(1),
-            flags=re.IGNORECASE,
+            r"^(?:(?:route|rute)\s+)?(?:di|ke|untuk)\s+", "", rest, flags=re.IGNORECASE
         ).strip()
+        rest = re.sub(r"^(?:rute|route)\s+", "", rest, flags=re.IGNORECASE).strip()
         group = None
         alt_label = ""
         # Longest-prefix match against stored group names (group names may
@@ -359,10 +376,12 @@ def route_action_start(user_id: int, text: str) -> str | None:
                 break
         if group is None:
             # No group prefix matched: with exactly one stored group, treat the
-            # whole rest as the label; otherwise let the LLM disambiguate.
+            # whole rest as the label — unless it is a pronoun ("itu"/"ini")
+            # referring to that group, in which case ask for the name.
             if len(groups) == 1:
                 group = groups[0]
-                alt_label = rest
+                if rest.lower() not in _PRONOUN_GROUP:
+                    alt_label = rest
             else:
                 return None
         alt_label = _clean_label(alt_label)
@@ -391,7 +410,7 @@ def route_action_start(user_id: int, text: str) -> str | None:
         )
 
     # "buat route <name>" — but "<name> baru via <label>" means an alternative.
-    m = re.match(r"^(?:buat|bikin|mulai)\s+(?:route|rute)\s+(.+)$", text, re.IGNORECASE)
+    m = re.match(r"^(?:buat|bikin|mulai)\s+(?:route|rute)\s+(.+)$", t, re.IGNORECASE)
     if m:
         name = m.group(1).strip()
         am = re.search(r"\s+baru(?:\s+via\s*(.+))?$", name, re.IGNORECASE)
@@ -431,6 +450,39 @@ def route_action_start(user_id: int, text: str) -> str | None:
         db.create_route_group(user_id, name)
         begin_points(user_id, name)
         return f'Oke, mulai route "{name}". Kirim 📍 lokasi titik A (mulai).'
+
+    # "namanya adalah via shell" (or similar) with no active wizard: the model
+    # often replies to a creation ask WITHOUT calling the tool, so no wizard
+    # exists. With a single stored group we can start the alternative wizard
+    # straight away from the user's answer.
+    if len(groups) == 1 and get_wizard(user_id) is None:
+        name_m = re.match(
+            r"^(?:nama alternatif(?:nya)?|namanya|namain|pake nama|pakai nama|nama\s+jalur)"
+            r"\s*(?:adalah\s*|:)?\s*(\S.*)$",
+            t,
+            re.IGNORECASE,
+        )
+        if name_m:
+            label = _clean_label(name_m.group(1))
+            low = label.lower()
+            if (
+                label
+                and low not in _PRONOUN_GROUP
+                and "?" not in label
+                and not re.search(r"\b(?:apa|gimana|bagaimana|kayak|macam|seperti|siapa)\b", low)
+            ):
+                group = groups[0]
+                begin_points(
+                    user_id,
+                    group["name"],
+                    alt_name=label[:60],
+                    kind="alt",
+                    group_id=group["id"],
+                )
+                return (
+                    f'Nama alternatif "{label}" dicatat untuk route "{group["name"]}". '
+                    "Kirim 📍 lokasi titik A (mulai)."
+                )
 
     return None
 
