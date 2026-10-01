@@ -955,6 +955,16 @@ class Bot:
                 await self._reply(update, reply_text)
             return
 
+        # "Buat route ..." / "tambah alternatif ..." must start a REAL wizard in
+        # plain code: the model once said "sudah disiapkan, kirim lokasinya"
+        # without ever calling the tool, so the next 📍 was rejected. Runs after
+        # the wizard block so an active wizard still owns the conversation.
+        action = routes.route_action_start(user_id, text)
+        if action is not None:
+            await self._reply(update, action)
+            db.add_message(user_id, "assistant", action)
+            return
+
         # Travel-time questions ("berapa lama...") are answered deterministically
         # too: the model once said "ETA belum aktif" from stale memory and kept
         # repeating it even after the API key was configured. ETA only ever comes

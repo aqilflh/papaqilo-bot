@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -280,6 +281,157 @@ def eta_target(user_id: int, text: str) -> dict[str, Any] | None:
     # "berapa lama route gue?" with exactly one stored group is unambiguous.
     if ("route" in lowered or "rute" in lowered) and len(groups) == 1:
         return groups[0]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# deterministic wizard start ("buat route X", "tambah alternatif ...")
+# ---------------------------------------------------------------------------
+
+#: Trailing filler the model's phrasings add; harmless to strip.
+_STOP_FILLER = ("baru", "dong", "yah", "ya", "bro", "bos", "woy", "gue", "dulu", "aja", "dongg")
+
+
+def _clean_label(text: str) -> str:
+    words = text.strip().strip('"').strip("'").split()
+    while words and words[-1].lower() in _STOP_FILLER:
+        words.pop()
+    return " ".join(words).strip()
+
+
+def _resolve_group(groups: list[dict[str, Any]], ref: str) -> dict[str, Any] | None:
+    """Find a group by name: exact, substring, or word overlap."""
+    ref = ref.lower().strip()
+    if not ref:
+        return None
+    for group in groups:
+        if group["name"].lower() == ref or ref in group["name"].lower():
+            return group
+    for group in groups:
+        name_tokens = set(group["name"].lower().split())
+        ref_tokens = set(ref.split())
+        if ref_tokens and ref_tokens.issubset(name_tokens):
+            return group
+    return None
+
+
+def route_action_start(user_id: int, text: str) -> str | None:
+    """Deterministically begin the wizard for a plain create/alternative ask.
+
+    Returns the confirmation reply (having started an in-memory wizard),
+    mirroring create_route_group / add_route_alternative. The model repeatedly
+    CLAIMED to have prepared a route ("sudah disiapkan, kirim lokasinya")
+    without ever calling the tool, so no wizard existed and the next 📍 was
+    rejected. Returns None when the wording is not a clean, parseable mutation
+    (then the LLM runs).
+    """
+    groups = db.list_route_groups(user_id)
+
+    # "tambah alternatif [route] <group> via <label>" / "... <label>" / "di <group>"
+    m = re.match(
+        r"^(?:tambah|buat|bikin)\s+alternatif(?:\s+(?:route|rute))?\s+(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        rest = re.sub(
+            r"^(?:(?:route|rute)\s+)?(?:di|ke|untuk)\s+",
+            "",
+            m.group(1),
+            flags=re.IGNORECASE,
+        ).strip()
+        group = None
+        alt_label = ""
+        # Longest-prefix match against stored group names (group names may
+        # themselves contain "via", e.g. "Pulang via Gempol"), so split the
+        # "<group> ..." prefix off before treating the tail as the label.
+        for cand in sorted(groups, key=lambda g: -len(g["name"])):
+            gname = cand["name"].lower()
+            if rest.lower().startswith(gname) and (
+                rest.lower() == gname or rest[len(gname) : len(gname) + 1].isspace()
+            ):
+                group = cand
+                tail = rest[len(gname) :].strip()
+                if tail:
+                    if tail.lower().startswith("via "):
+                        tail = f"via {tail[4:].strip()}"
+                    alt_label = tail
+                break
+        if group is None:
+            # No group prefix matched: with exactly one stored group, treat the
+            # whole rest as the label; otherwise let the LLM disambiguate.
+            if len(groups) == 1:
+                group = groups[0]
+                alt_label = rest
+            else:
+                return None
+        alt_label = _clean_label(alt_label)
+        if not alt_label:
+            set_wizard(
+                user_id,
+                {
+                    "phase": "alt_name",
+                    "kind": "alt",
+                    "group_id": group["id"],
+                    "group_name": group["name"],
+                    "alt_name": "",
+                },
+            )
+            return f"🛣️ Tambah Alternatif\n\nUntuk route:\n{group['name']}\n\nNama alternatif:"
+        begin_points(
+            user_id,
+            group["name"],
+            alt_name=alt_label[:60],
+            kind="alt",
+            group_id=group["id"],
+        )
+        return (
+            f'Oke, mulai alternatif "{alt_label}" di "{group["name"]}". '
+            "Kirim 📍 lokasi titik A (mulai)."
+        )
+
+    # "buat route <name>" — but "<name> baru via <label>" means an alternative.
+    m = re.match(r"^(?:buat|bikin|mulai)\s+(?:route|rute)\s+(.+)$", text, re.IGNORECASE)
+    if m:
+        name = m.group(1).strip()
+        am = re.search(r"\s+baru(?:\s+via\s*(.+))?$", name, re.IGNORECASE)
+        if am:
+            ref = name[: am.start()].strip()
+            alt_label = f"via {_clean_label(am.group(1) or '')}".strip()
+            group = _resolve_group(groups, ref)
+            if group is None or not alt_label:
+                return None
+            begin_points(
+                user_id,
+                group["name"],
+                alt_name=alt_label[:60],
+                kind="alt",
+                group_id=group["id"],
+            )
+            return (
+                f'Oke, mulai alternatif "{alt_label}" di "{group["name"]}". '
+                "Kirim 📍 lokasi titik A (mulai)."
+            )
+        name = _clean_label(name)
+        if not name:
+            return None
+        for group in groups:
+            if group["name"].lower() == name.lower():
+                return (
+                    f'Route "{group["name"]}" sudah ada. Mau tambah rute di situ? Bilang '
+                    f'"tambah alternatif {group["name"]} via <label>" lalu kirim 📍.'
+                )
+        for group in groups:
+            gname = group["name"].lower()
+            if gname.startswith(name.lower() + " ") or name.lower().startswith(gname + " "):
+                return (
+                    f'Kamu sudah punya route "{group["name"]}". Mau tambah jalur baru di situ? '
+                    f'Bilang "tambah alternatif {group["name"]} via <label>" lalu kirim 📍.'
+                )
+        db.create_route_group(user_id, name)
+        begin_points(user_id, name)
+        return f'Oke, mulai route "{name}". Kirim 📍 lokasi titik A (mulai).'
+
     return None
 
 

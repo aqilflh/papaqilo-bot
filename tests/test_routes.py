@@ -370,3 +370,70 @@ def test_on_text_eta_plain_code():
     assert stored["distance_meters"] == 9736
     hist = [m["content"] for m in db.recent_messages(OWNER, 5)]
     assert any("±45 menit" in c for c in hist)
+
+
+def test_route_action_start_create():
+    reply = routes.route_action_start(OWNER, "buat route Jalan Jauh")
+    assert reply is not None and "Jalan Jauh" in reply
+    w = routes.get_wizard(OWNER)
+    assert w is not None and w["phase"] == "points" and w["sub"] == "origin"
+    assert db.route_group_by_name(OWNER, "jalan jauh") is not None
+
+
+def test_route_action_start_existing_group_suggests_alternative():
+    _seed_route("via Pasar Minggu")  # group "Pulang"
+    reply = routes.route_action_start(OWNER, "buat route Pulang")
+    assert reply is not None and "sudah ada" in reply
+    assert routes.get_wizard(OWNER) is None
+    # "... baru via <label>" on an existing group means a new alternative.
+    routes.route_action_start(OWNER, "buat rute pulang baru via Shell")
+    w = routes.get_wizard(OWNER)
+    assert w is not None and w["kind"] == "alt" and w["alt_name"] == "via Shell"
+    assert w["group_id"] == db.route_group_by_name(OWNER, "Pulang")["id"]
+
+
+def test_route_action_start_alternative_phrasings():
+    _seed_route("via Pasar Minggu")  # group "Pulang"
+    routes.route_action_start(OWNER, "tambah alternatif Pulang via Shell")
+    w = routes.get_wizard(OWNER)
+    assert w is not None and w["alt_name"] == "via Shell" and w["kind"] == "alt"
+    routes.clear_wizard(OWNER)
+    # label only with a single stored group
+    routes.route_action_start(OWNER, "tambah alternatif Shell")
+    w = routes.get_wizard(OWNER)
+    assert w is not None and w["alt_name"].lower() == "shell"
+    routes.clear_wizard(OWNER)
+    # "di <group>" without a label asks for the alternative's name
+    reply = routes.route_action_start(OWNER, "tambah alternatif di Pulang")
+    assert reply is not None and "Nama alternatif" in reply
+    assert routes.get_wizard(OWNER)["phase"] == "alt_name"
+
+
+def test_route_action_start_ignores_other_chat():
+    assert routes.route_action_start(OWNER, "jangan lupa beli susu") is None
+    assert routes.route_action_start(OWNER, "cek route pulang") is None
+    assert routes.route_action_start(OWNER, "berapa lama ini klo pulang?") is None
+    assert routes.route_action_start(OWNER, "hapus route pulang") is None
+
+
+def test_route_action_start_group_name_contains_via():
+    gid = db.create_route_group(OWNER, "Pulang via Gempol")
+    routes.route_action_start(OWNER, "tambah alternatif Pulang via Gempol via Shell")
+    w = routes.get_wizard(OWNER)
+    assert w is not None and w["alt_name"] == "via Shell" and w["group_id"] == gid
+    routes.clear_wizard(OWNER)
+    # prefix "<group>" without a label asks for the alternative's name
+    reply = routes.route_action_start(OWNER, "tambah alternatif pulang via gempol")
+    assert reply is not None and "Nama alternatif" in reply
+    assert routes.get_wizard(OWNER)["group_id"] == gid
+
+
+def test_on_text_route_action_starts_wizard():
+    _seed_route("via Pasar Minggu")
+    replies: list[str] = []
+    asyncio.run(_bot(replies).on_text(_TextUpdate("tambah alternatif Pulang via Shell"), None))
+    assert replies[0].startswith("Oke, mulai alternatif")
+    w = routes.get_wizard(OWNER)
+    assert w is not None and w["alt_name"] == "via Shell"
+    hist = [m["content"] for m in db.recent_messages(OWNER, 5)]
+    assert any("mulai alternatif" in c for c in hist)
