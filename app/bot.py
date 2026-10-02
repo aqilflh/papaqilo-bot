@@ -76,6 +76,7 @@ Bilang aja "buat route pulang", lalu ikuti langkah bot: nama → kirim lokasi
 titik lewat 📍 Telegram → "done" → titik B → simpan. 
 /routes - daftar route kamu
 /tambahan: "tambah alternatif route ...", "lihat route ...", "hapus route ..."
+Pengingat rute: "ingetin route pulang jam 07:00", "cek reminder", "hapus reminder route pulang"
 
 Owner:
 /adduser <id> <nama> - tambah pengguna
@@ -963,6 +964,15 @@ class Bot:
         if action is not None:
             await self._reply(update, action)
             db.add_message(user_id, "assistant", action)
+            return
+
+        # "ingetin route pulang jam 07:00" / "hapus reminder route X" /
+        # "cek reminder" — a per-route daily reminder, handled in plain code
+        # like the wizard: the model never guesses the confirmation.
+        reminder = routes.route_reminder_action(user_id, text)
+        if reminder is not None:
+            await self._reply(update, reminder)
+            db.add_message(user_id, "assistant", reminder)
             return
 
         # Travel-time questions ("berapa lama...") are answered deterministically

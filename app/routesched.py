@@ -1,0 +1,110 @@
+"""Per-route-group daily reminder ("ingetin route pulang jam 07:00").
+
+The reminder text is deterministic: at fire time it is the group's route status
+built from the DB, so the ETA/distance shown is whatever the last Google compute
+left. No LLM involved. Delivery reuses the scheduler's catch-up rule (">= the
+target time, and not yet done today") plus a per-row claim, so a container that
+was down at 07:00 still fires the reminder when it restarts.
+
+The timezone logic (including per-user daily dedup) mirrors run_recaps.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import UTC, datetime
+from typing import Protocol
+
+from app import db, routes
+from app.log import get_logger, log_event
+from app.scheduler import is_due
+from app.tz import user_zone
+
+log = get_logger("routesched")
+
+
+class Sender(Protocol):
+    """The slice of the bot that route reminders need."""
+
+    async def send_message(self, user_id: int, text: str) -> None: ...
+
+
+def reminder_text(user_id: int, group_id: int) -> str:
+    """Compact status for one route group, or '' when the group is gone/empty."""
+    group = db.get_route_group(group_id, user_id)
+    if group is None:
+        return ""
+    rows = db.list_routes(group_id, user_id)
+    if not rows:
+        return ""
+    name = group["name"]
+    lines = [f"⏰ Route: {name}"]
+    lines.extend(
+        "  " + routes.route_summary(row, db.list_waypoints(row["id"], user_id)) for row in rows
+    )
+    lines.append(f'Matikan: "hapus reminder {name}".')
+    return "\n".join(lines)
+
+
+async def deliver_due_route_reminders(sender: Sender, now: datetime | None = None) -> int:
+    """Deliver every due route reminder. Returns how many were sent."""
+    now = now or datetime.now(UTC)
+    sent = 0
+
+    for row in db.list_due_route_reminders():
+        user_id = int(row["user_id"])
+        user = db.get_user(user_id)
+        if user is None:
+            continue
+        tz = user_zone(user.get("timezone"))
+        today = now.astimezone(tz).date().isoformat()
+        group_id = int(row["route_group_id"])
+
+        if not is_due({"time_hhmm": row["time_hhmm"]}, tz, now):
+            continue
+        if row.get("last_run_date") == today:
+            continue
+
+        # Claim before sending so a second tick cannot duplicate a reminder.
+        if not db.claim_route_reminder_run(user_id, group_id, today):
+            continue
+
+        text = reminder_text(user_id, group_id)
+        if not text:
+            # The group is gone or has no routes; stop retrying it.
+            db.delete_route_reminder(user_id, group_id)
+            log_event(
+                log,
+                logging.INFO,
+                "route_reminder_group_empty",
+                user_id=user_id,
+                group_id=group_id,
+            )
+            continue
+
+        try:
+            await sender.send_message(user_id, text)
+        except Exception as exc:  # noqa: BLE001 - one bad send must not stop the tick
+            log_event(
+                log,
+                logging.ERROR,
+                "route_reminder_send_failed",
+                user_id=user_id,
+                group_id=group_id,
+                error=type(exc).__name__,
+            )
+            # Release the claim so the next tick retries.
+            db.release_route_reminder_claim(user_id, group_id, today)
+            continue
+
+        sent += 1
+        log_event(
+            log,
+            logging.INFO,
+            "route_reminder_sent",
+            user_id=user_id,
+            group_id=group_id,
+            date=today,
+        )
+
+    return sent

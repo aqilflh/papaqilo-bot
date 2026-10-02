@@ -171,6 +171,19 @@ ALTER TABLE routes ADD COLUMN duration_seconds INTEGER;
 ALTER TABLE routes ADD COLUMN eta_updated_at TEXT;
 """
 
+_MIGRATION_6 = """
+CREATE TABLE route_reminders (
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  route_group_id  INTEGER NOT NULL REFERENCES route_groups(id) ON DELETE CASCADE,
+  time_hhmm       TEXT NOT NULL,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  last_run_date   TEXT,
+  created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, route_group_id)
+);
+"""
+
 # Each entry is (target_user_version, sql). Append only; never edit a shipped one.
 MIGRATIONS: Sequence[tuple[int, str]] = (
     (1, _MIGRATION_1),
@@ -178,6 +191,7 @@ MIGRATIONS: Sequence[tuple[int, str]] = (
     (3, _MIGRATION_3),
     (4, _MIGRATION_4),
     (5, _MIGRATION_5),
+    (6, _MIGRATION_6),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -1181,3 +1195,92 @@ def set_route_metrics(
             (int(distance_meters), int(duration_seconds), now_utc_iso(), route_id, user_id),
         )
         return cur.rowcount > 0
+
+
+# --------------------------------------------------------------------------
+# route reminders (per route group, daily at a chosen time)
+# --------------------------------------------------------------------------
+
+
+def set_route_reminder(user_id: int, route_group_id: int, time_hhmm: str) -> None:
+    """Create/update a daily reminder for one route group."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO route_reminders (user_id, route_group_id, time_hhmm, enabled)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(user_id, route_group_id) DO UPDATE SET
+                time_hhmm = excluded.time_hhmm,
+                enabled   = 1,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, route_group_id, time_hhmm),
+        )
+
+
+def get_route_reminder(user_id: int, route_group_id: int) -> dict[str, Any] | None:
+    with _cursor() as cur:
+        row = cur.execute(
+            "SELECT * FROM route_reminders WHERE user_id = ? AND route_group_id = ?",
+            (user_id, route_group_id),
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def delete_route_reminder(user_id: int, route_group_id: int) -> bool:
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM route_reminders WHERE user_id = ? AND route_group_id = ?",
+            (user_id, route_group_id),
+        )
+        return cur.rowcount > 0
+
+
+def list_route_reminders(user_id: int) -> list[dict[str, Any]]:
+    """All reminders for a user, ordered by time, with the group name."""
+    with _cursor() as cur:
+        rows = cur.execute(
+            """
+            SELECT rr.user_id, rr.route_group_id, rr.time_hhmm, rr.enabled,
+                   rr.last_run_date, g.name AS group_name
+            FROM route_reminders rr
+            JOIN route_groups g ON g.id = rr.route_group_id
+            WHERE rr.user_id = ?
+            ORDER BY rr.time_hhmm ASC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_due_route_reminders() -> list[dict[str, Any]]:
+    """Every enabled reminder. The caller applies per-user timezone logic."""
+    with _cursor() as cur:
+        rows = cur.execute("SELECT * FROM route_reminders WHERE enabled = 1").fetchall()
+    return [dict(r) for r in rows]
+
+
+def claim_route_reminder_run(user_id: int, route_group_id: int, run_date: str) -> bool:
+    """Atomically claim today's delivery. True if this caller won the claim."""
+    with _transaction() as cur:
+        cur.execute(
+            """
+            UPDATE route_reminders SET last_run_date = ?
+            WHERE user_id = ? AND route_group_id = ?
+              AND enabled = 1
+              AND (last_run_date IS NULL OR last_run_date != ?)
+            """,
+            (run_date, user_id, route_group_id, run_date),
+        )
+        won = cur.rowcount == 1
+    return won
+
+
+def release_route_reminder_claim(user_id: int, route_group_id: int, run_date: str) -> None:
+    """Undo a claim so a failed delivery can be retried."""
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE route_reminders SET last_run_date = NULL "
+            "WHERE user_id = ? AND route_group_id = ? AND last_run_date = ?",
+            (user_id, route_group_id, run_date),
+        )

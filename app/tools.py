@@ -782,6 +782,54 @@ async def route_eta(ctx: ToolContext, args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def set_route_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Set a daily route reminder at HH:MM for one route group."""
+    name = args.get("name")
+    time = args.get("time")
+    if not isinstance(name, str) or not name.strip():
+        raise ValidationError("name (nama route group) wajib diisi")
+    if not isinstance(time, str) or not time.strip():
+        raise ValidationError("time wajib diisi, format HH:MM 24-jam")
+    group = db.route_group_by_name(ctx.user_id, name)
+    if group is None:
+        return f'Tidak ketemu route group "{name}". Coba "lihat route" untuk daftarnya.'
+    try:
+        datetime.strptime(time.strip(), "%H:%M")
+    except ValueError as exc:
+        raise ValidationError(
+            f'Format jam harus HH:MM 24-jam (contoh 07:00, 19:30), dapat: "{time.strip()}"'
+        ) from exc
+    db.set_route_reminder(ctx.user_id, group["id"], time.strip())
+    return (
+        f'✅ Route "{group["name"]}" bakal diingetin tiap hari jam {time.strip()}. '
+        f'Matiin? Bilang "hapus reminder {group["name"]}".'
+    )
+
+
+async def list_route_reminders(ctx: ToolContext, args: dict[str, Any]) -> str:
+    reminders = db.list_route_reminders(ctx.user_id)
+    if not reminders:
+        return 'Belum ada reminder route. Bilang "ingetin route pulang jam 07:00" buat nyetel.'
+    lines = ["⏰ Reminder route:"]
+    for r in reminders:
+        label = "aktif" if r["enabled"] else "mati"
+        lines.append(f"- {r['group_name']}: {r['time_hhmm']} ({label})")
+    return "\n".join(lines)
+
+
+async def unset_route_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValidationError("name (nama route group) wajib diisi")
+    group = db.route_group_by_name(ctx.user_id, name)
+    if group is None:
+        return f'Tidak ketemu route group "{name}". Coba "lihat route" untuk daftarnya.'
+    removed = db.delete_route_reminder(ctx.user_id, group["id"])
+    if not removed:
+        return f'Route "{group["name"]}" nggak punya reminder.'
+    return f'Reminder route "{group["name"]}" dimatikan.'
+
+
 # --------------------------------------------------------------------------
 # registry
 # --------------------------------------------------------------------------
@@ -1153,6 +1201,61 @@ TOOLS: tuple[Tool, ...] = (
             "required": ["name"],
         },
         handler=route_eta,
+    ),
+    Tool(
+        name="set_route_reminder",
+        description=(
+            "Aktifkan pengingat harian untuk satu route group di jam tertentu. "
+            "User bilang 'ingetin route X jam 7 pagi', 'remind route X at 07:00', "
+            "atau 'pasang pengingat rute'. Setiap hari di jam itu bot kirim status "
+            "ETA route tersebut. JANGAN mengarang: call tool ini dan laporkan "
+            "hasilnya. Untuk mengubah jam, cukup call lagi dengan time baru."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Nama route group, misal 'Pulang'.",
+                },
+                "time": {
+                    "type": "string",
+                    "description": "Jam pengingat format HH:MM 24-jam, misal '07:00' atau '19:30'.",
+                },
+            },
+            "required": ["name", "time"],
+        },
+        handler=set_route_reminder,
+    ),
+    Tool(
+        name="list_route_reminders",
+        description=(
+            "Tampilkan semua pengingat route milik user (grup + jam + status). "
+            "Panggil ini kalau user minta 'cek reminder', 'daftar pengingat rute', "
+            "atau 'reminder aku apa aja'."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=list_route_reminders,
+    ),
+    Tool(
+        name="unset_route_reminder",
+        description=(
+            "Matikan pengingat harian untuk satu route group. User bilang 'hapus "
+            "reminder route X', 'matikan pengingat rute X', atau 'jangan ingetin "
+            "lagi'. Kalau user minta matikan tanpa menyebut route, panggil "
+            "list_route_reminders dulu untuk tahu jam di route mana."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Nama route group, misal 'Pulang'.",
+                }
+            },
+            "required": ["name"],
+        },
+        handler=unset_route_reminder,
     ),
 )
 

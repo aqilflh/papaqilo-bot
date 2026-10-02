@@ -487,6 +487,128 @@ def route_action_start(user_id: int, text: str) -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------
+# per-route daily reminder ("ingetin route <group> jam <HH:MM>")
+# --------------------------------------------------------------------------
+_REMINDER_WORDS = r"(?:reminder|pengingat|ingatan|ingetan|inget{1,2}an)"
+
+
+def _strip_route_lead(text: str) -> str:
+    """Drop leading pronoun/cruft words from a reminder's group reference."""
+    for kw in (
+        "gue",
+        "aku",
+        "saya",
+        "kita",
+        "mau",
+        "buat",
+        "di",
+        "untuk",
+        "tentang",
+        "route",
+        "rute",
+        "group",
+        "grup",
+    ):
+        text = re.sub(rf"^{re.escape(kw)}\s+", "", text, flags=re.IGNORECASE).strip()
+    return re.sub(rf"{_TAIL_FILLERS}$", "", text, flags=re.IGNORECASE).strip()
+
+
+def route_reminder_action(user_id: int, text: str) -> str | None:
+    """Deterministically set/list/remove a daily route reminder.
+
+    Returns a reply only for clear reminder speech that resolves to a route
+    group. Plain reminder phrases ("ingetin aku jam 9") return None so the LLM
+    keeps handling generic reminders.
+    """
+    t = _strip_fillers(text).strip()
+    groups = db.list_route_groups(user_id)
+
+    # "ingetin route pulang jam 7 pagi" / "... pukul 19:30" → set
+    m = re.match(
+        r"^(?:(?:di)?(?:inget{1,2}in|ingati|ingatkan)|remind(?:er)?s?"
+        r"|(?:set|pasang|bikin|buat)\s+reminder)"
+        r"\s+(?P<before>.+?)\s+(?:jam|pukul)\s+(?P<hour>\d{1,2})"
+        r"(?:[.:](?P<min>\d{2}))?\s*(?P<period>pagi|siang|sore|malam)?"
+        r"(?:\s+(?:ya|bro|bang|dong|nih|deh|aja))?$",
+        t,
+        re.IGNORECASE,
+    )
+    if m:
+        before = _strip_route_lead(m.group("before"))
+        group = _resolve_group(groups, before)
+        if group is None and len(groups) == 1 and before.lower() in _PRONOUN_GROUP:
+            group = groups[0]
+        if group is None:
+            return None
+        hour = int(m.group("hour"))
+        minute = int(m.group("min") or 0)
+        period = (m.group("period") or "").lower()
+        if period in ("malam", "siang", "sore") and 1 <= hour < 12:
+            hour += 12
+        if hour > 23 or minute > 59:
+            return f'Format jam kurang jelas. Contoh: "ingetin {group["name"]} jam 07:00".'
+        hhmm = f"{hour:02d}:{minute:02d}"
+        db.set_route_reminder(user_id, group["id"], hhmm)
+        return (
+            f'✅ Route "{group["name"]}" bakal diingetin tiap hari jam {hhmm}. '
+            f'Matiin? Bilang "hapus reminder {group["name"]}".'
+        )
+
+    # "hapus reminder route pulang" → unset
+    m = re.match(
+        rf"^(?:hapus|delete|matikan|stop|buang)\s+{_REMINDER_WORDS}"
+        r"\s*(?:route|rute|group|grup)?\s*(.+)$",
+        t,
+        re.IGNORECASE,
+    )
+    if m:
+        target = _clean_label(m.group(1))
+        group = _resolve_group(groups, target)
+        if group is None and len(groups) == 1 and not target:
+            group = groups[0]
+        if group is None:
+            return None
+        removed = db.delete_route_reminder(user_id, group["id"])
+        if not removed:
+            return f'Route "{group["name"]}" nggak punya reminder.'
+        return (
+            f'Reminder route "{group["name"]}" dimatikan. '
+            f'Mau nyalain lagi? Bilang "ingetin {group["name"]} jam <jam>".'
+        )
+
+    # "cek reminder" / "cek reminder route pulang" → list
+    m = re.match(
+        rf"^(?:cek|lihat|liat|daftar|list)\s+{_REMINDER_WORDS}"
+        r"\s*(?:route|rute|group|grup)?\s*(.*)$",
+        t,
+        re.IGNORECASE,
+    )
+    if m:
+        rows = db.list_route_reminders(user_id)
+        if not rows:
+            return (
+                "Belum ada reminder route. Contoh: "
+                '"ingetin route pulang jam 07:00" buat diingetin tiap hari.'
+            )
+        if m.group(1).strip():
+            target = _clean_label(m.group(1))
+            group = _resolve_group(groups, target)
+            if group is None:
+                return None
+            row = next((r for r in rows if r["route_group_id"] == group["id"]), None)
+            if row is None:
+                return f'Route "{group["name"]}" belum punya reminder.'
+            return f'⏰ Reminder "{group["name"]}": {row["time_hhmm"]}.'
+        lines = ["⏰ Reminder route:"]
+        for r in rows:
+            label = "aktif" if r["enabled"] else "mati"
+            lines.append(f"- {r['group_name']}: {r['time_hhmm']} ({label})")
+        return "\n".join(lines)
+
+    return None
+
+
 def preview_text(state: dict[str, Any]) -> str:
     """Preview right before saving, ending with the /simpan ask."""
     wps = state["waypoints"]
