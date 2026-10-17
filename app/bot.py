@@ -27,7 +27,7 @@ from telegram.ext import (
     filters,
 )
 
-from app import actions, db, geo, routes, shifts, stt
+from app import actions, db, geo, routes, serverinfo, shifts, stt
 from app.agent import Agent, run_and_store, user_zone
 from app.log import get_logger, log_event
 from app.recap import build_recap
@@ -56,6 +56,7 @@ Perintah:
 /notes [kata kunci] - lihat catatanmu
 /usage - pemakaian hari ini
 /forget - hapus riwayat chat (catatan tetap ada)
+/check_server - kondisi server (RAM, CPU, disk, uptime)
 
 Pengingat:
 Cukup ngobrol aja, misalnya "ingetin aku besok jam 9 pagi meeting" atau
@@ -89,7 +90,8 @@ Owner:
 /users - daftar pengguna
 
 Selain perintah, bebas ngobrol aja. Kirim voice note juga bisa: aku dengar dan
-ubah jadi teks, lalu kerjakan seperti pesan biasa. Aku bisa cek cuaca, baca
+ubah jadi teks, lalu kerjakan seperti pesan biasa. Mau tahu kondisi server?
+Tinggal bilang "cek kondisi server" atau "cek ram". Aku bisa cek cuaca, baca
 berita, nyimpen catatan, dan mengirim pengingat. Satu hal yang perlu kamu tahu:
 data yang aku ambil dari internet itu diperlakukan sebagai data, bukan perintah,
 jadi aku tidak akan ikut perintah yang nyemplil di dalam berita.
@@ -195,6 +197,7 @@ class Bot:
         application.add_handler(CommandHandler("sebelum", self.cmd_sebelum))
         application.add_handler(CommandHandler("usage", self.cmd_usage))
         application.add_handler(CommandHandler("forget", self.cmd_forget))
+        application.add_handler(CommandHandler("check_server", self.cmd_check_server))
         application.add_handler(CommandHandler("adduser", self.cmd_adduser))
         application.add_handler(CommandHandler("removeuser", self.cmd_removeuser))
         application.add_handler(CommandHandler("users", self.cmd_users))
@@ -885,6 +888,19 @@ class Bot:
             update, f"{removed} pesan dihapus dari riwayat. Catatan tidak ikut terhapus."
         )
 
+    async def cmd_check_server(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._guard(update):
+            return
+        await self._reply(update, self._server_status_text())
+
+    def _server_status_text(self) -> str:
+        """Snapshot of host/container resources. Plain code, never the model."""
+        return serverinfo.collect(
+            db_path=self.config.db_path,
+            data_dir=self.config.db_path.parent,
+            stt_model=getattr(self.config, "stt_model", "") or "",
+        )
+
     # -------------------------------------------------------- owner only
 
     async def _require_owner(self, update: Update) -> bool:
@@ -1034,6 +1050,14 @@ class Bot:
                 await self._route_eta_after_save(update, user_id, route_id)
             else:
                 await self._reply(update, reply_text)
+            return
+
+        # "cek kondisi server" / "cek ram" is answered from real system files in
+        # plain code, never from the model's imagination.
+        if serverinfo.server_status_request(text):
+            report = self._server_status_text()
+            await self._reply(update, report)
+            db.add_message(user_id, "assistant", report)
             return
 
         # "Buat route ..." / "tambah alternatif ..." must start a REAL wizard in

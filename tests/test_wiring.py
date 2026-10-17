@@ -65,6 +65,7 @@ def test_build_registers_handlers(config):
             "cmd_notes",
             "cmd_usage",
             "cmd_forget",
+            "cmd_check_server",
             "cmd_adduser",
             "cmd_removeuser",
             "cmd_users",
