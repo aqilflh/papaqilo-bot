@@ -1,0 +1,2 @@
+# Selalu pakai LF di server Linux, apa pun OS lokalnya
+*.sh text eol=lf
