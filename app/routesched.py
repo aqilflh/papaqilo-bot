@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
-from app import db, routes
+from app import db, geo, routes
 from app.log import get_logger, log_event
 from app.scheduler import is_due
 from app.tz import user_zone
@@ -46,7 +46,49 @@ def reminder_text(user_id: int, group_id: int) -> str:
     return "\n".join(lines)
 
 
-async def deliver_due_route_reminders(sender: Sender, now: datetime | None = None) -> int:
+async def _refresh_group_eta(user_id: int, group_id: int, *, http: Any, maps_api_key: str) -> None:
+    """Best-effort recompute of ETA/distance for every route in the group.
+
+    Called at delivery time so the reminder shows current traffic instead of the
+    numbers cached from the last manual "ETA route ...". Failures are logged and
+    ignored: a reminder with a slightly stale ETA beats no reminder at all.
+    """
+    for route in db.list_routes(group_id, user_id):
+        if route["origin_lat"] is None or route["destination_lat"] is None:
+            continue
+        waypoints = [
+            (w["latitude"], w["longitude"]) for w in db.list_waypoints(route["id"], user_id)
+        ]
+        try:
+            metrics = await geo.compute_route(
+                http,
+                maps_api_key,
+                (route["origin_lat"], route["origin_lng"]),
+                waypoints,
+                (route["destination_lat"], route["destination_lng"]),
+            )
+            db.set_route_metrics(
+                route["id"], user_id, metrics["distance_meters"], metrics["duration_seconds"]
+            )
+        except Exception as exc:  # noqa: BLE001 - never block the reminder
+            log_event(
+                log,
+                logging.WARNING,
+                "route_reminder_eta_failed",
+                user_id=user_id,
+                group_id=group_id,
+                route_id=route["id"],
+                error=type(exc).__name__,
+            )
+
+
+async def deliver_due_route_reminders(
+    sender: Sender,
+    *,
+    http: Any | None = None,
+    maps_api_key: str | None = None,
+    now: datetime | None = None,
+) -> int:
     """Deliver every due route reminder. Returns how many were sent."""
     now = now or datetime.now(UTC)
     sent = 0
@@ -68,6 +110,11 @@ async def deliver_due_route_reminders(sender: Sender, now: datetime | None = Non
         # Claim before sending so a second tick cannot duplicate a reminder.
         if not db.claim_route_reminder_run(user_id, group_id, today):
             continue
+
+        # Refresh ETA at fire time so the reminder reflects real traffic, not
+        # the stale cached numbers. Falls back to cached values on failure.
+        if http is not None and maps_api_key:
+            await _refresh_group_eta(user_id, group_id, http=http, maps_api_key=maps_api_key)
 
         text = reminder_text(user_id, group_id)
         if not text:

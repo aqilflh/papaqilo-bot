@@ -70,7 +70,12 @@ async def tick(bot: Bot) -> None:
         log_event(log, logging.ERROR, "tick_shift_reminders_failed", error=type(exc).__name__)
 
     try:
-        route_sent = await deliver_due_route_reminders(bot, now=now)
+        route_sent = await deliver_due_route_reminders(
+            bot,
+            http=bot.http,
+            maps_api_key=getattr(bot.config, "google_maps_api_key", "") or "",
+            now=now,
+        )
         if route_sent:
             log_event(log, logging.INFO, "tick_route_reminders", sent=route_sent)
     except Exception as exc:  # noqa: BLE001
