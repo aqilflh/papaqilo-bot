@@ -85,6 +85,12 @@ class Config:
     show_thinking: bool
     log_level: str
     google_maps_api_key: str = ""
+    # Local speech-to-text (faster-whisper). An empty STT_MODEL disables the
+    # voice-note handler, which is the escape hatch on a box without the RAM.
+    stt_model: str = "base"
+    stt_compute_type: str = "int8"
+    stt_cpu_threads: int = 2
+    stt_language: str = "id"
 
 
 def load_config() -> Config:
@@ -126,6 +132,14 @@ def load_config() -> Config:
         log_level=_str("LOG_LEVEL", "INFO").upper(),
         # Optional: without it, routes still work, only ETA is skipped.
         google_maps_api_key=_str("GOOGLE_MAPS_API_KEY", ""),
+        # Voice notes: a base int8 model is ~350 MB resident, which is why
+        # docker-compose raises the container limit to 1 GiB. Set STT_MODEL to
+        # empty to turn the feature off. "id" is forced as the default language:
+        # short command clips are too little audio for reliable auto-detect.
+        stt_model=_str("STT_MODEL", "base"),
+        stt_compute_type=_str("STT_COMPUTE_TYPE", "int8"),
+        stt_cpu_threads=_int("STT_CPU_THREADS", 2),
+        stt_language=_str("STT_LANGUAGE", "id"),
     )
 
     if cfg.max_tool_iterations < 1:
@@ -134,4 +148,6 @@ def load_config() -> Config:
         raise ConfigError("MAX_OUTPUT_TOKENS must be at least 1")
     if cfg.default_daily_limit < 1:
         raise ConfigError("DEFAULT_DAILY_LIMIT must be at least 1")
+    if cfg.stt_cpu_threads < 1:
+        raise ConfigError("STT_CPU_THREADS must be at least 1")
     return cfg

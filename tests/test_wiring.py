@@ -69,6 +69,7 @@ def test_build_registers_handlers(config):
             "cmd_removeuser",
             "cmd_users",
             "on_text",
+            "on_voice",
         ):
             assert name in callbacks, f"{name} is not registered"
 

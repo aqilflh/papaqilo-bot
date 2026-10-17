@@ -15,6 +15,9 @@ services:
       # Redundant with .env on purpose: the container needs its own TZ for the
       # scheduler, and python's zoneinfo reads TZ when no /etc/localtime exists.
       TZ: ${TZ:-Asia/Jakarta}
+      # Keep the Whisper weights in the bind-mounted data dir so they persist
+      # across image rebuilds instead of re-downloading ~150 MB every deploy.
+      HF_HOME: /app/data/whisper
     volumes:
       # The sqlite file and daily backups live here. ./data must be writable by
       # APP_UID, which is the host user running compose.
@@ -23,7 +26,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          # 1 GiB: the base int8 Whisper model is ~350 MB resident, on top of
+          # the ~50 MB the bot itself uses. 512 MiB would OOM-kill the process
+          # on the first voice note.
+          memory: 1g
     logging:
       driver: json-file
       options:

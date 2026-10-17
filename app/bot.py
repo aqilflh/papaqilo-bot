@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import logging
 import re
+import tempfile
+from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from telegram import CallbackQuery, Update
@@ -24,7 +27,7 @@ from telegram.ext import (
     filters,
 )
 
-from app import actions, db, geo, routes, shifts
+from app import actions, db, geo, routes, shifts, stt
 from app.agent import Agent, run_and_store, user_zone
 from app.log import get_logger, log_event
 from app.recap import build_recap
@@ -38,6 +41,8 @@ log = get_logger("bot")
 TELEGRAM_LIMIT = 4096
 #: Leave headroom so a split never lands exactly on the limit.
 CHUNK_SIZE = 3900
+#: Voice notes longer than this are refused before we spend CPU on them.
+STT_MAX_SECONDS = 120
 
 HELP_TEXT = """Hai! Aku asisten pribadimu.
 
@@ -83,9 +88,10 @@ Owner:
 /removeuser <id> - hapus pengguna
 /users - daftar pengguna
 
-Selain perintah, bebas ngobrol aja. Aku bisa cek cuaca, baca berita,
-nyimpen catatan, dan mengirim pengingat. Satu hal yang perlu kamu tahu: data
-yang aku ambil dari internet itu diperlakukan sebagai data, bukan perintah,
+Selain perintah, bebas ngobrol aja. Kirim voice note juga bisa: aku dengar dan
+ubah jadi teks, lalu kerjakan seperti pesan biasa. Aku bisa cek cuaca, baca
+berita, nyimpen catatan, dan mengirim pengingat. Satu hal yang perlu kamu tahu:
+data yang aku ambil dari internet itu diperlakukan sebagai data, bukan perintah,
 jadi aku tidak akan ikut perintah yang nyemplil di dalam berita.
 """
 
@@ -197,6 +203,9 @@ class Bot:
         )
         application.add_handler(CallbackQueryHandler(self.on_any_callback))
         application.add_handler(MessageHandler(filters.LOCATION, self.on_location))
+        # Voice notes are transcribed locally, then fed through the same text
+        # pipeline. Registered before the catch-all text handler.
+        application.add_handler(MessageHandler(filters.VOICE, self.on_voice))
         # Must stay last: it catches every non-command text message.
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
 
@@ -815,12 +824,12 @@ class Bot:
                 detail=repr(exc),
             )
 
-    async def _handle_shift_import(self, update: Update) -> None:
+    async def _handle_shift_import(self, update: Update, text: str) -> None:
         """A plain text with >=5 shift-looking lines is an import, not chat."""
         user_id = update.effective_user.id
         tz = self._user_tz(user_id)
         today = datetime.now(tz).date()
-        parsed = parse_schedule(update.effective_message.text or "", today)
+        parsed = parse_schedule(text, today)
         if parsed.ambiguous:
             await self._reply(
                 update,
@@ -937,8 +946,79 @@ class Bot:
     async def on_text(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
             return
+        await self._process_text(update, update.effective_message.text or "")
+
+    async def on_voice(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Transcribe a voice note locally, echo it, then run the text pipeline.
+
+        The transcript is treated exactly like typed text: a spoken "ingetin
+        route pulang jam 7" hits the same deterministic intercepts. Echoing it
+        back lets the user notice a misheard word instead of wondering why the
+        bot did the wrong thing.
+        """
+        if not await self._guard(update):
+            return
+        message = update.effective_message
+        voice = message.voice if message is not None else None
+        if voice is None:
+            return
         user_id = update.effective_user.id
-        text = update.effective_message.text or ""
+
+        model_name = getattr(self.config, "stt_model", "") or ""
+        if not model_name:
+            await self._reply(update, "Fitur voice note sedang dimatikan.")
+            return
+        if voice.duration and voice.duration > STT_MAX_SECONDS:
+            await self._reply(update, f"Voice note kepanjangan (maks {STT_MAX_SECONDS} detik).")
+            return
+
+        await update.effective_chat.send_action(ChatAction.TYPING)
+        tmp_path: Path | None = None
+        try:
+            tg_file = await voice.get_file()
+            with tempfile.NamedTemporaryFile(suffix=".oga", delete=False) as handle:
+                tmp_path = Path(handle.name)
+            await tg_file.download_to_drive(custom_path=str(tmp_path))
+            text = await stt.transcribe(
+                tmp_path,
+                model_name=model_name,
+                compute_type=getattr(self.config, "stt_compute_type", "int8"),
+                cpu_threads=getattr(self.config, "stt_cpu_threads", 2),
+                language=getattr(self.config, "stt_language", "id"),
+            )
+        except Exception as exc:  # noqa: BLE001 - a handler must never die
+            log_event(
+                log,
+                logging.ERROR,
+                "voice_transcribe_failed",
+                user_id=user_id,
+                error=type(exc).__name__,
+                detail=repr(exc),
+            )
+            await self._reply(update, "Gagal transkripsi voice note. Coba lagi ya.")
+            return
+        finally:
+            if tmp_path is not None:
+                with suppress(OSError):
+                    tmp_path.unlink()
+
+        if not text:
+            await self._reply(update, "Voice note-nya nggak kedengaran jelas. Coba ulangi.")
+            return
+        log_event(
+            log,
+            logging.INFO,
+            "voice_transcribed",
+            user_id=user_id,
+            seconds=voice.duration,
+            chars=len(text),
+        )
+        await self._reply(update, f"🎙️ {text}")
+        await self._process_text(update, text)
+
+    async def _process_text(self, update: Update, text: str) -> None:
+        """The shared reply pipeline for typed text and transcribed voice."""
+        user_id = update.effective_user.id
 
         # An active route wizard owns the conversation: names, gates and the
         # save confirm are plain code, not LLM guessing.
@@ -1000,7 +1080,7 @@ class Bot:
         # send it to the LLM, and never store it in the chat history.
         if count_matching_lines(text) >= 5:
             try:
-                await self._handle_shift_import(update)
+                await self._handle_shift_import(update, text)
             except Exception as exc:  # noqa: BLE001 - handler must never die
                 log_event(
                     log,

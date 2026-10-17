@@ -3,3 +3,6 @@ python-telegram-bot[job-queue]==22.8
 openai==3.19.2
 httpx==0.28.1
 feedparser==6.0.14
+# Local speech-to-text for voice notes (CTranslate2, CPU, int8). Ships its own
+# audio decoder (PyAV), so no system ffmpeg is needed.
+faster-whisper==1.2.1
