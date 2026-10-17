@@ -143,8 +143,13 @@ def _dir_size(path: Path) -> int:
     try:
         for root, _dirs, files in os.walk(path):
             for name in files:
+                file = Path(root) / name
                 try:
-                    total += (Path(root) / name).stat().st_size
+                    # The HuggingFace cache stores snapshots as symlinks to blobs;
+                    # counting the link and the blob would double the model size.
+                    if file.is_symlink():
+                        continue
+                    total += file.stat().st_size
                 except OSError:
                     continue
     except OSError:
@@ -194,8 +199,12 @@ def collect(
     if up is not None:
         lines.append(f"• Uptime host: {_fmt_duration(up)}")
 
+    # Prefer the data dir: it is a bind mount onto the host filesystem, so the
+    # numbers match `df`. Inside the container, "/" is an overlay with its own
+    # (misleading) size.
+    disk_path = data_dir if data_dir is not None else root
     try:
-        usage = shutil.disk_usage(root)
+        usage = shutil.disk_usage(disk_path)
     except OSError:
         usage = None
     if usage is not None and usage.total:
