@@ -20,6 +20,7 @@ __pycache__/
 .idea/
 .DS_Store
 *.swp
+deploy.md
 
 # Stale flat-layout duplicates at repo root (source of truth: app/ and tests/).
 # These are leftovers from the pre-package layout; removing them from the
