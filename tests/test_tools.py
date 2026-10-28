@@ -502,3 +502,129 @@ def test_set_reminder_keeps_a_monthly_pattern(ctx, conn):
     assert row["repeat_kind"] == "monthly"
     assert row["monthday"] == 1
     assert "setiap tanggal 1" in out
+
+
+# ------------------------------------------------------------- reminders: edit
+
+
+def _future(hours: int = 2):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Jakarta")) + timedelta(hours=hours)
+
+
+def _seed_reminder(repeat: str = "once", hours: int = 2) -> int:
+    from app import db
+
+    due = _future(hours)
+    monthday = due.day if repeat in ("monthly", "yearly") else None
+    return db.add_reminder(7, "minum obat", repeat, due, due.strftime("%H:%M"), None, monthday)
+
+
+def test_update_reminder_can_snooze_relative_to_now(ctx, conn):
+    from datetime import UTC, datetime, timedelta
+
+    from app import db
+
+    reminder_id = _seed_reminder()
+
+    out = asyncio.run(tools.update_reminder_tool(ctx, {"id": reminder_id, "add_minutes": 30}))
+
+    row = db.get_reminder(reminder_id, 7)
+    due = datetime.fromisoformat(row["due_at"])
+    delta = due - datetime.now(UTC)
+    assert timedelta(minutes=25) < delta < timedelta(minutes=35)
+    assert "diperbarui" in out
+
+
+def test_update_reminder_rebuilds_the_calendar_fields_when_repeat_changes(ctx, conn):
+    from app import db
+
+    reminder_id = _seed_reminder()
+    at = (_future(72)).replace(hour=9, minute=0, second=0, microsecond=0)
+
+    asyncio.run(
+        tools.update_reminder_tool(
+            ctx, {"id": reminder_id, "at": at.strftime("%Y-%m-%dT%H:%M"), "repeat": "yearly"}
+        )
+    )
+
+    row = db.get_reminder(reminder_id, 7)
+    assert row["repeat_kind"] == "yearly"
+    assert row["month"] == at.month
+    assert row["monthday"] == at.day
+
+
+def test_update_reminder_keeps_the_pattern_fields_when_repeat_is_untouched(ctx, conn):
+    """Snoozing a monthly reminder must not quietly move it to today's date."""
+    from app import db
+
+    due = _future(48).replace(day=1, hour=9, minute=0, second=0, microsecond=0)
+    reminder_id = db.add_reminder(7, "prepaid", "monthly", due, "09:00", None, 1)
+
+    asyncio.run(tools.update_reminder_tool(ctx, {"id": reminder_id, "add_minutes": 10}))
+
+    row = db.get_reminder(reminder_id, 7)
+    assert row["monthday"] == 1
+
+
+def test_update_reminder_refuses_a_stale_reminder_without_a_new_time(ctx, conn):
+    from datetime import timedelta
+
+    from app import db
+
+    past = _future(2) - timedelta(hours=3)
+    reminder_id = db.add_reminder(7, "lama", "once", past, "09:00")
+
+    with pytest.raises(ValidationError, match="sudah lewat"):
+        asyncio.run(tools.update_reminder_tool(ctx, {"id": reminder_id, "text": "baru"}))
+
+
+def test_update_reminder_says_so_for_an_unknown_id(ctx, conn):
+    out = asyncio.run(tools.update_reminder_tool(ctx, {"id": 999, "add_minutes": 10}))
+    assert "Tidak ada pengingat" in out
+
+
+# ------------------------------------------------------------- server status
+
+
+def test_get_server_status_is_owner_only(ctx, conn):
+    out = asyncio.run(run_tool("get_server_status", {}, ctx, owner=False))
+    assert "hanya untuk owner" in out
+
+
+def test_get_server_status_is_not_offered_to_non_owners(conn):
+    names = {tool["function"]["name"] for tool in tools.tool_definitions(owner=False)}
+    assert "get_server_status" not in names
+    owner_names = {tool["function"]["name"] for tool in tools.tool_definitions(owner=True)}
+    assert "get_server_status" in owner_names
+
+
+def test_get_server_status_passes_the_db_path_through(ctx, conn, monkeypatch):
+    """The report must be able to size the database, so the ctx has to carry it."""
+    from pathlib import Path
+
+    from app import tools as tools_mod
+
+    seen = {}
+
+    def fake_collect(**kwargs):
+        seen.update(kwargs)
+        return "REPORT"
+
+    monkeypatch.setattr(tools_mod.serverinfo, "collect", fake_collect)
+    owner_ctx = tools.ToolContext(
+        user_id=7,
+        saved_city=None,
+        http=None,
+        feeds=[],
+        db_path=Path("/app/data/agent.db"),
+        stt_model="base",
+    )
+
+    out = asyncio.run(run_tool("get_server_status", {}, owner_ctx, owner=True))
+    assert out == "REPORT"
+    assert seen["db_path"] == Path("/app/data/agent.db")
+    assert seen["data_dir"] == Path("/app/data")
+    assert seen["stt_model"] == "base"

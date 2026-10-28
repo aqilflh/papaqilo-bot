@@ -54,6 +54,7 @@ REPEAT_LABEL = {
     "daily": "setiap hari",
     "weekly": "setiap minggu",
     "monthly": "setiap bulan",
+    "yearly": "setiap tahun",
 }
 
 
@@ -109,6 +110,22 @@ def next_occurrence(reminder: dict[str, Any], tz: ZoneInfo, now: datetime) -> da
             if month > 12:
                 month = 1
                 year += 1
+        return None
+
+    if kind == "yearly":
+        monthday = reminder.get("monthday")
+        month = reminder.get("month")
+        if monthday is None or month is None:
+            return None
+        year = local_now.year
+        # Two tries is enough; the third is slack for a 29 February reminder
+        # landing on a non-leap year.
+        for _ in range(3):
+            day = min(int(monthday), calendar.monthrange(year, int(month))[1])
+            candidate = datetime(year, int(month), day, hh, mm, tzinfo=tz)
+            if candidate > local_now:
+                return candidate.astimezone(UTC)
+            year += 1
         return None
 
     return None
@@ -191,12 +208,17 @@ async def deliver_due(sender: Any, now: datetime | None = None) -> int:
 
 
 def reminder_message(reminder: dict[str, Any], tz: ZoneInfo, overdue: timedelta) -> str:
-    """The message body. Says how late it is so a catch-up is never confusing."""
+    """The message body. Says how late it is so a catch-up is never confusing.
+
+    The id is included so a follow-up like "tunda 30 menit" has something to
+    point at: the row is deactivated the moment it fires, so it is no longer in
+    list_reminders, and the model must not guess an id from memory.
+    """
     if overdue >= timedelta(minutes=1):
         late = f" (terlambat {int(overdue.total_seconds() // 60)} menit)"
     else:
         late = ""
-    return f"Pengingat{late}: {reminder['text']}"
+    return f"Pengingat{late} #{reminder['id']}: {reminder['text']}"
 
 
 def list_for_user(user_id: int) -> list[dict[str, Any]]:

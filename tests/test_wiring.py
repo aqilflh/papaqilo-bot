@@ -98,3 +98,33 @@ def test_post_init_is_not_used(config):
 
 def test_feeds_file_is_present():
     assert Path("feeds.json").is_file()
+
+
+def test_every_command_method_is_reachable_from_telegram(config):
+    """A cmd_* method that is never registered is dead code the user cannot reach.
+
+    The help text test above pins a hand-picked list; this one derives the list
+    from the class, so a new handler cannot be added and silently forgotten.
+    """
+    application, bot, http = main_mod.build(config)
+    try:
+        callbacks = {
+            getattr(handler.callback, "__name__", "")
+            for handlers in application.handlers.values()
+            for handler in handlers
+        }
+        declared = {name for name in dir(type(bot)) if name.startswith("cmd_")}
+        assert declared, "no cmd_* methods found: the class shape changed"
+        missing = sorted(declared - callbacks)
+        assert not missing, f"cmd_* methods with no handler: {missing}"
+    finally:
+        _teardown(http)
+
+
+def test_every_tool_is_addressable_by_name():
+    """The model calls tools by name; a duplicate or missing name fails at runtime."""
+    from app.tools import TOOL_BY_NAME, TOOLS
+
+    names = [tool.name for tool in TOOLS]
+    assert len(names) == len(set(names)), "duplicate tool name"
+    assert set(names) == set(TOOL_BY_NAME)

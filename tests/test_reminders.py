@@ -409,3 +409,128 @@ def test_format_reminder_labels_a_monthly_reminder():
     )
     row = db.get_reminder(reminder_id, OWNER)
     assert "setiap bulan" in format_reminder(row, WIB)
+
+
+# ------------------------------------------------------------ yearly
+
+
+def _yearly(hhmm: str, monthday: int | None, month: int | None) -> dict:
+    return {
+        "repeat_kind": "yearly",
+        "local_hhmm": hhmm,
+        "weekday": None,
+        "monthday": monthday,
+        "month": month,
+    }
+
+
+def test_yearly_moves_to_next_year_when_this_years_date_has_passed():
+    """A tax reminder set for 1 February must not fire again until next February."""
+    now = datetime(2027, 2, 2, 10, 0, tzinfo=WIB)
+    got = next_occurrence(_yearly("09:00", 1, 2), WIB, now)
+    assert got.astimezone(WIB) == datetime(2028, 2, 1, 9, 0, tzinfo=WIB)
+
+
+def test_yearly_stays_in_the_same_year_when_the_date_is_still_ahead():
+    now = datetime(2027, 1, 15, 10, 0, tzinfo=WIB)
+    got = next_occurrence(_yearly("09:00", 1, 2), WIB, now)
+    assert got.astimezone(WIB) == datetime(2027, 2, 1, 9, 0, tzinfo=WIB)
+
+
+def test_yearly_clamps_29_february_on_a_non_leap_year():
+    """Same rule as monthly: clamp to the last valid day, never skip a year."""
+    now = datetime(2028, 3, 1, 10, 0, tzinfo=WIB)
+    got = next_occurrence(_yearly("09:00", 29, 2), WIB, now)
+    assert got.astimezone(WIB) == datetime(2029, 2, 28, 9, 0, tzinfo=WIB)
+
+
+def test_yearly_returns_to_29_february_in_the_next_leap_year():
+    """The clamp must not ratchet a 29 February reminder onto the 28th for good."""
+    now = datetime(2031, 3, 1, 10, 0, tzinfo=WIB)
+    got = next_occurrence(_yearly("09:00", 29, 2), WIB, now)
+    assert got.astimezone(WIB) == datetime(2032, 2, 29, 9, 0, tzinfo=WIB)
+
+
+def test_yearly_without_month_gives_up_instead_of_looping():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    assert next_occurrence(_yearly("09:00", 1, None), WIB, now) is None
+
+
+def test_deliver_advances_a_yearly_reminder_to_next_year():
+    first = datetime(2026, 11, 30, 9, 0, tzinfo=WIB)
+    db.add_reminder(OWNER, "bayar pajak", "yearly", first, "09:00", None, 30, 11)
+    sender = FakeSender()
+
+    assert asyncio.run(deliver_due(sender, now=first)) == 1
+    pending = db.list_reminders(OWNER)
+    assert len(pending) == 1
+    assert pending[0]["monthday"] == 30
+    assert pending[0]["month"] == 11
+    assert datetime.fromisoformat(pending[0]["due_at"]).astimezone(WIB) == datetime(
+        2027, 11, 30, 9, 0, tzinfo=WIB
+    )
+
+
+def test_delivered_message_carries_the_id_so_it_can_be_snoozed():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    reminder_id = _once("telepon ibu", now - timedelta(minutes=1))
+    sender = FakeSender()
+    asyncio.run(deliver_due(sender, now=now))
+    assert f"#{reminder_id}" in sender.sent[0][1]
+
+
+# ------------------------------------------------------------------ editing
+
+
+def test_update_reminder_reactivates_a_reminder_that_already_fired():
+    """Snoozing happens after delivery, when the row is already inactive."""
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    reminder_id = _once("telepon ibu", now - timedelta(minutes=1))
+    asyncio.run(deliver_due(FakeSender(), now=now))
+    assert db.list_reminders(OWNER) == []
+
+    later = now + timedelta(minutes=30)
+    assert db.update_reminder(
+        reminder_id,
+        OWNER,
+        text="telepon ibu",
+        repeat_kind="once",
+        due_at=later,
+        local_hhmm="10:30",
+    )
+    pending = db.list_reminders(OWNER)
+    assert len(pending) == 1, "a snoozed reminder must come back to life"
+    assert pending[0]["last_sent_at"] is None
+
+
+def test_update_reminder_is_scoped_to_the_owner():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    reminder_id = _once("punya owner", now + timedelta(hours=1))
+    assert (
+        db.update_reminder(
+            reminder_id,
+            OTHER,
+            text="dibajak",
+            repeat_kind="once",
+            due_at=now + timedelta(hours=2),
+            local_hhmm="11:00",
+        )
+        is False
+    )
+    assert db.get_reminder(reminder_id, OWNER)["text"] == "punya owner"
+
+
+def test_update_reminder_rejects_an_impossible_month():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    reminder_id = _once("x", now + timedelta(hours=1))
+    with pytest.raises(ValueError):
+        db.update_reminder(
+            reminder_id,
+            OWNER,
+            text="x",
+            repeat_kind="yearly",
+            due_at=now + timedelta(days=1),
+            local_hhmm="10:00",
+            monthday=1,
+            month=13,
+        )

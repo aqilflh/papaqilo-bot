@@ -17,10 +17,30 @@ FALLBACK_TZ = "Asia/Jakarta"
 #: they render "Tuesday" in an Indonesian chat. Name the days ourselves.
 HARI = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
 
+BULAN = [
+    "Januari",
+    "Februari",
+    "Maret",
+    "April",
+    "Mei",
+    "Juni",
+    "Juli",
+    "Agustus",
+    "September",
+    "Oktober",
+    "November",
+    "Desember",
+]
+
 
 def hari_name(moment: datetime) -> str:
     """Indonesian weekday name for a Monday-indexed weekday()."""
     return HARI[moment.weekday()]
+
+
+def bulan_name(month: int) -> str:
+    """Indonesian month name, 1-based, for labels like 'setiap tahun 1 Februari'."""
+    return BULAN[(int(month) - 1) % 12]
 
 
 def user_zone(name: str | None) -> ZoneInfo:

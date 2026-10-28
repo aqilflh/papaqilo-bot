@@ -66,8 +66,13 @@ Pengingat:
 - Kalau user minta agar diingatkan sesuatu, pakai tool set_reminder.
 - Kalau user minta BERULANG, isi juga `repeat`: "daily" untuk tiap hari,
   "weekly" untuk hari yang sama tiap minggu, "monthly" untuk tanggal yang sama
-  tiap bulan ("tiap tanggal 1" berarti monthly). Isi `at` dengan kemunculan
-  pertama yang masih akan datang.
+  tiap bulan ("tiap tanggal 1" berarti monthly), "yearly" untuk tanggal dan
+  bulan yang sama tiap tahun (pajak tahunan, ulang tahun). Isi `at` dengan
+  kemunculan pertama yang masih akan datang.
+- Kalau user ingin MENUNDA atau MENGUBAH pengingat yang sudah ada, pakai
+  update_reminder, jangan hapus lalu buat ulang. "Tunda 30 menit" berarti
+  add_minutes=30. Setiap pesan pengingat yang dikirim memuat id-nya (#12), jadi
+  pakai id itu; kalau tidak yakin, panggil list_reminders dulu.
 - Pola lain belum didukung: tiap N jam, tiap N hari, beberapa hari sekaligus
   ("tiap Senin dan Kamis"). Sebut singkat bahwa pola itu belum ada, lalu
   tawarkan pilihan terdekat. Jangan bilang pengingat berulang tidak bisa
@@ -108,6 +113,11 @@ Menghapus catatan:
   tool itu hanya menyiapkan daftar dan meminta user mengirim /hapus untuk
   mengonfirmasi (atau /batal untuk batal). Jangan mengaku sudah terhapus
   sebelum user mengirim /hapus.
+
+Server:
+- Kalau user bertanya kondisi server, RAM, CPU, disk, atau uptime, panggil
+  get_server_status. Jangan pernah bilang tidak punya akses; tool itu ada.
+- Angka dari tool itu yang benar. Jangan mengarang atau mengulang angka lama.
 
 Route:
 - "Buat route ..." → panggil create_route_group. Tool hanya MEMULAI wizard:
@@ -236,6 +246,8 @@ class Agent:
             http=self.http,
             feeds=self.feeds,
             maps_api_key=getattr(self.config, "google_maps_api_key", "") or "",
+            db_path=getattr(self.config, "db_path", None),
+            stt_model=getattr(self.config, "stt_model", "") or "",
         )
         messages = self.build_messages(user_id, user_text)
         tools = tool_definitions(owner=owner)

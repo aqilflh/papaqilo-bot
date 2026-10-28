@@ -188,6 +188,10 @@ _MIGRATION_7 = """
 ALTER TABLE reminders ADD COLUMN monthday INTEGER;
 """
 
+_MIGRATION_8 = """
+ALTER TABLE reminders ADD COLUMN "month" INTEGER;
+"""
+
 # Each entry is (target_user_version, sql). Append only; never edit a shipped one.
 MIGRATIONS: Sequence[tuple[int, str]] = (
     (1, _MIGRATION_1),
@@ -197,6 +201,7 @@ MIGRATIONS: Sequence[tuple[int, str]] = (
     (5, _MIGRATION_5),
     (6, _MIGRATION_6),
     (7, _MIGRATION_7),
+    (8, _MIGRATION_8),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -486,7 +491,17 @@ def _escape_like(text: str) -> str:
 # reminders
 # --------------------------------------------------------------------------
 
-REPEAT_KINDS = ("once", "daily", "weekly", "monthly")
+REPEAT_KINDS = ("once", "daily", "weekly", "monthly", "yearly")
+
+
+def _check_pattern(repeat_kind: str, monthday: int | None, month: int | None) -> None:
+    """Reject a pattern that could never be scheduled, before it reaches SQL."""
+    if repeat_kind not in REPEAT_KINDS:
+        raise ValueError(f"repeat_kind must be one of {REPEAT_KINDS}, got {repeat_kind!r}")
+    if monthday is not None and not 1 <= int(monthday) <= 31:
+        raise ValueError(f"monthday must be 1..31, got {monthday!r}")
+    if month is not None and not 1 <= int(month) <= 12:
+        raise ValueError(f"month must be 1..12, got {month!r}")
 
 
 def add_reminder(
@@ -497,6 +512,7 @@ def add_reminder(
     local_hhmm: str,
     weekday: int | None = None,
     monthday: int | None = None,
+    month: int | None = None,
 ) -> int:
     """Store a reminder. `due_at` is UTC; the local fields drive recurrence.
 
@@ -504,20 +520,17 @@ def add_reminder(
     daily 07:00 WIB reminder would drift by the UTC offset once a DST-shifting
     zone is involved.
 
-    `monthday` keeps the day the user actually asked for ('tanggal 1' means 1
-    forever). Deriving it from `due_at` instead would ratchet: a 31st reminder
-    clamped to 28 February would stay on the 28th for good.
+    `monthday` and `month` keep the day the user actually asked for ('tanggal 1'
+    means 1 forever). Deriving them from `due_at` instead would ratchet: a 31st
+    reminder clamped to 28 February would stay on the 28th for good.
     """
-    if repeat_kind not in REPEAT_KINDS:
-        raise ValueError(f"repeat_kind must be one of {REPEAT_KINDS}, got {repeat_kind!r}")
-    if monthday is not None and not 1 <= int(monthday) <= 31:
-        raise ValueError(f"monthday must be 1..31, got {monthday!r}")
+    _check_pattern(repeat_kind, monthday, month)
     with _cursor() as cur:
         cur.execute(
             """
             INSERT INTO reminders
-                (user_id, text, repeat_kind, due_at, local_hhmm, weekday, monthday)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (user_id, text, repeat_kind, due_at, local_hhmm, weekday, monthday, "month")
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -527,9 +540,53 @@ def add_reminder(
                 local_hhmm,
                 weekday,
                 monthday,
+                month,
             ),
         )
         return int(cur.lastrowid or 0)
+
+
+def update_reminder(
+    reminder_id: int,
+    user_id: int,
+    *,
+    text: str,
+    repeat_kind: str,
+    due_at: datetime,
+    local_hhmm: str,
+    weekday: int | None = None,
+    monthday: int | None = None,
+    month: int | None = None,
+) -> bool:
+    """Rewrite a reminder and bring it back to life. False if not theirs.
+
+    Reactivation is the point: the most common edit is snoozing a `once`
+    reminder that has just fired, and a row left with active = 0 would accept
+    the new time and then silently never send.
+    """
+    _check_pattern(repeat_kind, monthday, month)
+    with _cursor() as cur:
+        cur.execute(
+            """
+            UPDATE reminders
+               SET text = ?, repeat_kind = ?, due_at = ?, local_hhmm = ?,
+                   weekday = ?, monthday = ?, "month" = ?,
+                   active = 1, last_sent_at = NULL
+             WHERE id = ? AND user_id = ?
+            """,
+            (
+                text,
+                repeat_kind,
+                due_at.astimezone(UTC).isoformat(timespec="seconds"),
+                local_hhmm,
+                weekday,
+                monthday,
+                month,
+                reminder_id,
+                user_id,
+            ),
+        )
+        return cur.rowcount > 0
 
 
 def list_reminders(user_id: int, active_only: bool = True) -> list[dict[str, Any]]:

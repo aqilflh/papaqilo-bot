@@ -27,10 +27,10 @@ from typing import Any
 import feedparser
 import httpx
 
-from app import actions, db, geo, routes
+from app import actions, db, geo, routes, serverinfo
 from app.log import get_logger, log_event
 from app.reminders import describe_when, format_reminder, parse_due
-from app.tz import user_zone
+from app.tz import bulan_name, user_zone
 
 log = get_logger("tools")
 
@@ -101,6 +101,10 @@ class ToolContext:
     http: httpx.AsyncClient
     feeds: list[dict[str, str]]
     maps_api_key: str = ""
+    #: Where the DB lives, so get_server_status can size it. Optional because
+    #: most tools never need to know.
+    db_path: Path | None = None
+    stt_model: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,7 +464,8 @@ async def set_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
 
     local_due = due.astimezone(tz)
     weekday = local_due.weekday() if repeat == "weekly" else None
-    monthday = local_due.day if repeat == "monthly" else None
+    monthday = local_due.day if repeat in ("monthly", "yearly") else None
+    month = local_due.month if repeat == "yearly" else None
     reminder_id = db.add_reminder(
         ctx.user_id,
         text,
@@ -469,6 +474,7 @@ async def set_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
         local_due.strftime("%H:%M"),
         weekday,
         monthday,
+        month,
     )
 
     label = {
@@ -476,6 +482,7 @@ async def set_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
         "daily": "setiap hari",
         "weekly": "setiap minggu",
         "monthly": f"setiap tanggal {monthday}",
+        "yearly": f"setiap tanggal {monthday} {bulan_name(month or 1)}",
     }[repeat]
     suffix = f", {label}" if repeat != "once" else ""
     return (
@@ -492,6 +499,123 @@ async def list_reminders(ctx: ToolContext, args: dict[str, Any]) -> str:
     tz = user_zone(user.get("timezone") if user else None)
     lines = [format_reminder(r, tz) for r in reminders]
     return _truncate(f"{len(reminders)} pengingat aktif:\n" + "\n".join(lines))
+
+
+#: An edit may push a reminder this far ahead. Same horizon as set_reminder.
+_EDIT_HORIZON = timedelta(days=365 * 2)
+
+
+async def update_reminder_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Change a reminder in place: new time, new text, new pattern, or a snooze.
+
+    Snoozing is expressed as `add_minutes` relative to now rather than an
+    absolute instant, because "tunda 30 menit" is what people actually say and
+    the model should not have to do the arithmetic itself.
+    """
+    try:
+        reminder_id = int(args.get("id"))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("id harus berupa angka") from exc
+
+    row = db.get_reminder(reminder_id, ctx.user_id)
+    if row is None:
+        return f"Tidak ada pengingat dengan id {reminder_id} milik user ini."
+
+    text = str(args.get("text") or row["text"]).strip()[:2000]
+    if not text:
+        raise ValidationError("text tidak boleh kosong")
+
+    repeat = args.get("repeat") or row["repeat_kind"]
+    if repeat not in db.REPEAT_KINDS:
+        raise ValidationError(
+            f"repeat harus salah satu dari {', '.join(db.REPEAT_KINDS)}, bukan {repeat!r}"
+        )
+
+    user = db.get_user(ctx.user_id)
+    tz = user_zone(user.get("timezone") if user else None)
+    now = datetime.now(tz)
+    at = args.get("at")
+    add_minutes = args.get("add_minutes")
+    if at and add_minutes is not None:
+        raise ValidationError("isi salah satu saja: at atau add_minutes")
+
+    if add_minutes is not None:
+        minutes = _clamp(int(add_minutes), 1, 60 * 24 * 30)
+        due = now.astimezone(UTC) + timedelta(minutes=minutes)
+    elif at:
+        try:
+            due = parse_due(str(at), tz)
+        except ValueError as exc:
+            raise ValidationError(
+                f"at tidak bisa dibaca sebagai waktu ISO 8601: {exc}. "
+                "Format yang benar: '2026-09-29T09:00'."
+            ) from exc
+    else:
+        due = datetime.fromisoformat(row["due_at"])
+        if due <= now.astimezone(UTC):
+            raise ValidationError(
+                "Pengingat ini waktunya sudah lewat, jadi butuh waktu baru: "
+                "isi at (waktu absolut) atau add_minutes (misalnya 30 untuk tunda)."
+            )
+
+    if due <= now.astimezone(UTC):
+        raise ValidationError(
+            f"Waktu itu sudah lewat ({describe_when(due, tz)}). Minta waktu yang akan datang."
+        )
+    if due > now.astimezone(UTC) + _EDIT_HORIZON:
+        raise ValidationError("Waktu itu terlalu jauh (lebih dari 2 tahun).")
+
+    local_due = due.astimezone(tz)
+    if args.get("repeat") is not None:
+        # The pattern changed, so the calendar fields must be rebuilt from the
+        # new anchor. Otherwise the old day-of-month would survive the change.
+        weekday = local_due.weekday() if repeat == "weekly" else None
+        monthday = local_due.day if repeat in ("monthly", "yearly") else None
+        month = local_due.month if repeat == "yearly" else None
+    else:
+        weekday = row["weekday"]
+        monthday = row["monthday"]
+        month = row["month"]
+
+    updated = db.update_reminder(
+        reminder_id,
+        ctx.user_id,
+        text=text,
+        repeat_kind=repeat,
+        due_at=due,
+        local_hhmm=local_due.strftime("%H:%M"),
+        weekday=weekday,
+        monthday=monthday,
+        month=month,
+    )
+    if not updated:
+        return f"Tidak ada pengingat dengan id {reminder_id} milik user ini."
+
+    label = {
+        "once": "sekali",
+        "daily": "setiap hari",
+        "weekly": "setiap minggu",
+        "monthly": f"setiap tanggal {monthday}",
+        "yearly": f"setiap tanggal {monthday} {bulan_name(month or 1)}",
+    }[repeat]
+    return (
+        f"Pengingat #{reminder_id} diperbarui ({label}): {text}. "
+        f"Dikirim {describe_when(due, tz)} waktu lokal."
+    )
+
+
+async def get_server_status(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Resource report for the host and this container.
+
+    The same text /check_server sends. A tool rather than a keyword match,
+    because "cek kondisi skrg" and "ram aman?" must both work.
+    """
+    db_path = ctx.db_path
+    return serverinfo.collect(
+        db_path=db_path,
+        data_dir=db_path.parent if db_path else None,
+        stt_model=ctx.stt_model,
+    )
 
 
 async def delete_reminder_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
@@ -1011,18 +1135,64 @@ TOOLS: tuple[Tool, ...] = (
                 },
                 "repeat": {
                     "type": "string",
-                    "enum": ["once", "daily", "weekly", "monthly"],
+                    "enum": ["once", "daily", "weekly", "monthly", "yearly"],
                     "description": (
                         "'once' untuk sekali, 'daily' untuk setiap hari, 'weekly' "
                         "untuk hari yang sama tiap minggu, 'monthly' untuk tanggal "
-                        "yang sama tiap bulan (misalnya 'tiap tanggal 1'). "
-                        "Default 'once'."
+                        "yang sama tiap bulan (misalnya 'tiap tanggal 1'), 'yearly' "
+                        "untuk tanggal dan bulan yang sama tiap tahun (pajak, ulang "
+                        "tahun). Default 'once'."
                     ),
                 },
             },
             "required": ["text", "at"],
         },
         handler=set_reminder,
+    ),
+    Tool(
+        name="update_reminder",
+        description=(
+            "Ubah pengingat yang sudah ada: teks, waktu, atau pola ulangannya. "
+            "Juga dipakai untuk MENUNDA: kirim add_minutes=30 untuk 'tunda 30 "
+            "menit'. Jangan hapus lalu buat ulang hanya untuk menggeser waktu. "
+            "Pakai id dari pesan pengingat (misalnya '#37') atau dari "
+            "list_reminders."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Nomor pengingat, misalnya 37 dari '#37'.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Isi baru. Kosongkan kalau tidak berubah.",
+                },
+                "at": {
+                    "type": "string",
+                    "description": (
+                        "Waktu baru sebagai ISO 8601 absolut, misalnya "
+                        "'2026-11-02T08:00'. Jangan kirim waktu relatif."
+                    ),
+                },
+                "add_minutes": {
+                    "type": "integer",
+                    "description": (
+                        "Tunda sekian menit dari sekarang, untuk 'tunda 30 "
+                        "menit' atau 'ingetin 2 jam lagi'. Jangan pakai "
+                        "bersamaan dengan at."
+                    ),
+                },
+                "repeat": {
+                    "type": "string",
+                    "enum": ["once", "daily", "weekly", "monthly", "yearly"],
+                    "description": "Pola baru, kalau user ingin mengubahnya.",
+                },
+            },
+            "required": ["id"],
+        },
+        handler=update_reminder_tool,
     ),
     Tool(
         name="list_reminders",
@@ -1266,6 +1436,18 @@ TOOLS: tuple[Tool, ...] = (
             "required": ["name"],
         },
         handler=unset_route_reminder,
+    ),
+    Tool(
+        name="get_server_status",
+        description=(
+            "Kondisi server tempat bot ini jalan: RAM bot dan container, RAM "
+            "host, CPU/load, uptime, disk, dan ukuran data. Pakai kalau user "
+            "bertanya soal kondisi, kesehatan, atau resource server — termasuk "
+            "pertanyaan pendek seperti 'ram aman?' atau 'disk sisa berapa'."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=get_server_status,
+        owner_only=True,
     ),
 )
 
