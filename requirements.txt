@@ -6,3 +6,8 @@ feedparser==6.0.14
 # Local speech-to-text for voice notes (CTranslate2, CPU, int8). Ships its own
 # audio decoder (PyAV), so no system ffmpeg is needed.
 faster-whisper==1.2.1
+# PyAV must stay below 16: faster-whisper 1.2.1 calls
+# av.open(..., metadata_errors="ignore") and PyAV 16 removed that argument.
+# Left unpinned, pip installs av 19 and every voice note fails at decode with
+# "open() got an unexpected keyword argument 'metadata_errors'".
+av==15.1.0

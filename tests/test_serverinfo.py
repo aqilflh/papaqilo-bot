@@ -9,6 +9,12 @@ import pytest
 from app import serverinfo
 
 
+@pytest.fixture(autouse=True)
+def _decoder_ok(monkeypatch):
+    """The real decode check needs faster-whisper; tests state the verdict."""
+    monkeypatch.setattr(serverinfo.stt, "decode_check", lambda: (True, "ok"))
+
+
 def _make_env(tmp_path: Path) -> tuple[Path, Path]:
     proc = tmp_path / "proc"
     pid1 = proc / "1"
@@ -48,7 +54,7 @@ def test_collect_reports_all_sections(tmp_path):
     assert "Disk: " in text
     assert "Data: 1.0 MB" in text
     assert "Database: 2 KB" in text
-    assert "Whisper: base (belum di-load)" in text
+    assert "Whisper: base (belum di-load, decode ok)" in text
 
 
 def test_collect_skips_missing_sources(tmp_path):
@@ -65,7 +71,20 @@ def test_whisper_active_when_model_loaded(tmp_path, monkeypatch):
     proc, cgroup = _make_env(tmp_path)
     monkeypatch.setattr(serverinfo.stt, "_model", object(), raising=False)
     text = serverinfo.collect(proc=proc, cgroup=cgroup, root=tmp_path, stt_model="base")
-    assert "Whisper: base (aktif di RAM)" in text
+    assert "Whisper: base (aktif di RAM, decode ok)" in text
+
+
+def test_whisper_decode_failure_is_reported_not_hidden(tmp_path, monkeypatch):
+    """A broken PyAV pair must show up here, not only when a voice note arrives."""
+    proc, cgroup = _make_env(tmp_path)
+    monkeypatch.setattr(
+        serverinfo.stt,
+        "decode_check",
+        lambda: (False, "TypeError: unexpected keyword argument 'metadata_errors'"),
+    )
+    text = serverinfo.collect(proc=proc, cgroup=cgroup, root=tmp_path, stt_model="base")
+    assert "DECODE GAGAL" in text
+    assert "metadata_errors" in text
 
 
 @pytest.mark.parametrize(

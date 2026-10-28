@@ -105,3 +105,59 @@ def test_decode_errors_are_wrapped_as_stt_error(tmp_path):
 
 async def test_async_wrapper_transcribes_off_the_loop(tmp_path):
     assert await stt.transcribe(_audio(tmp_path)) == "halo dunia"
+
+
+# --------------------------------------------------------------- decode check
+
+
+def test_decode_check_reports_a_missing_decoder(monkeypatch):
+    """Local dev has no faster-whisper; that must read as a warning, not a crash."""
+    monkeypatch.delitem(sys.modules, "faster_whisper", raising=False)
+    ok, detail = stt.decode_check()
+    assert ok is False
+    assert "tidak terpasang" in detail
+
+
+def test_decode_check_reports_a_pyav_signature_mismatch(monkeypatch):
+    """The exact production bug: faster-whisper's call no longer fits PyAV."""
+    import types as _types
+
+    module = _types.ModuleType("faster_whisper.audio")
+
+    def decode_audio(path, sampling_rate=16000):
+        raise TypeError("open() got an unexpected keyword argument 'metadata_errors'")
+
+    module.decode_audio = decode_audio
+    package = sys.modules["faster_whisper"]
+    monkeypatch.setattr(package, "audio", module, raising=False)
+    monkeypatch.setitem(sys.modules, "faster_whisper.audio", module)
+
+    ok, detail = stt.decode_check()
+    assert ok is False
+    assert "metadata_errors" in detail
+
+
+def test_decode_check_passes_with_a_working_decoder(monkeypatch):
+    import types as _types
+
+    module = _types.ModuleType("faster_whisper.audio")
+    module.decode_audio = lambda path, sampling_rate=16000: [0.0] * 100
+    package = sys.modules["faster_whisper"]
+    monkeypatch.setattr(package, "audio", module, raising=False)
+    monkeypatch.setitem(sys.modules, "faster_whisper.audio", module)
+
+    assert stt.decode_check() == (True, "ok")
+
+
+def test_decode_check_reports_a_silent_decode(monkeypatch):
+    import types as _types
+
+    module = _types.ModuleType("faster_whisper.audio")
+    module.decode_audio = lambda path, sampling_rate=16000: []
+    package = sys.modules["faster_whisper"]
+    monkeypatch.setattr(package, "audio", module, raising=False)
+    monkeypatch.setitem(sys.modules, "faster_whisper.audio", module)
+
+    ok, detail = stt.decode_check()
+    assert ok is False
+    assert "kosong" in detail

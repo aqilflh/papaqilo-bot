@@ -227,6 +227,8 @@ def collect(
 
     if stt_model:
         state = "aktif di RAM" if stt._model is not None else "belum di-load"
-        lines.append(f"• Whisper: {stt_model} ({state})")
+        ok, detail = stt.decode_check()
+        decode = "decode ok" if ok else f"DECODE GAGAL: {detail}"
+        lines.append(f"• Whisper: {stt_model} ({state}, {decode})")
 
     return "\n".join(lines)

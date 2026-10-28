@@ -14,7 +14,10 @@ must not run at the same time either.
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import threading
+import wave
+from contextlib import suppress
 from pathlib import Path
 
 #: "base" is the sweet spot for short Indonesian clips on 2 vCPUs. "small" is
@@ -114,3 +117,39 @@ async def transcribe(
         cpu_threads=cpu_threads,
         language=language,
     )
+
+
+def decode_check() -> tuple[bool, str]:
+    """Can this install decode audio at all? Returns (ok, detail).
+
+    faster-whisper hands the file straight to PyAV instead of shelling out to
+    ffmpeg, so the two libraries have to agree. They did not: faster-whisper
+    1.2.1 calls ``av.open(..., metadata_errors="ignore")`` and PyAV 16 removed
+    that argument, which broke every voice note at decode time, before the
+    model ever ran, and only became visible when a user sent one.
+
+    Decoding a tiny generated WAV costs milliseconds and never loads the model,
+    so /check_server can report the breakage instead of hiding it behind
+    "belum di-load".
+    """
+    path: Path | None = None
+    try:
+        from faster_whisper.audio import decode_audio
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            path = Path(handle.name)
+        with wave.open(str(path), "w") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(16000)
+            out.writeframes(b"\x00\x00" * 1600)
+        samples = decode_audio(str(path), sampling_rate=16000)
+        return (True, "ok") if len(samples) else (False, "audio kosong")
+    except ImportError:
+        return False, "faster-whisper tidak terpasang"
+    except Exception as exc:  # noqa: BLE001 - the message is the whole point
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        if path is not None:
+            with suppress(OSError):
+                path.unlink()
