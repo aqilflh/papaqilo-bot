@@ -473,3 +473,32 @@ def test_route_eta_without_api_key_says_so(conn):
     )
     assert "belum aktif" in out
     assert "GOOGLE_MAPS_API_KEY" in out
+
+
+def test_set_reminder_keeps_a_monthly_pattern(ctx, conn):
+    """'Tiap tanggal 1' must be stored as monthly, with the day the user asked for."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from app import db
+
+    wib = ZoneInfo("Asia/Jakarta")
+    first = (datetime.now(wib) + timedelta(days=60)).replace(
+        day=1, hour=9, minute=0, second=0, microsecond=0
+    )
+
+    out = asyncio.run(
+        tools.set_reminder(
+            ctx,
+            {
+                "text": "jalankan prepaid switching",
+                "at": first.strftime("%Y-%m-%dT%H:%M"),
+                "repeat": "monthly",
+            },
+        )
+    )
+
+    row = db.list_reminders(ctx.user_id)[0]
+    assert row["repeat_kind"] == "monthly"
+    assert row["monthday"] == 1
+    assert "setiap tanggal 1" in out

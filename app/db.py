@@ -184,6 +184,10 @@ CREATE TABLE route_reminders (
 );
 """
 
+_MIGRATION_7 = """
+ALTER TABLE reminders ADD COLUMN monthday INTEGER;
+"""
+
 # Each entry is (target_user_version, sql). Append only; never edit a shipped one.
 MIGRATIONS: Sequence[tuple[int, str]] = (
     (1, _MIGRATION_1),
@@ -192,6 +196,7 @@ MIGRATIONS: Sequence[tuple[int, str]] = (
     (4, _MIGRATION_4),
     (5, _MIGRATION_5),
     (6, _MIGRATION_6),
+    (7, _MIGRATION_7),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -481,7 +486,7 @@ def _escape_like(text: str) -> str:
 # reminders
 # --------------------------------------------------------------------------
 
-REPEAT_KINDS = ("once", "daily", "weekly")
+REPEAT_KINDS = ("once", "daily", "weekly", "monthly")
 
 
 def add_reminder(
@@ -491,20 +496,28 @@ def add_reminder(
     due_at: datetime,
     local_hhmm: str,
     weekday: int | None = None,
+    monthday: int | None = None,
 ) -> int:
     """Store a reminder. `due_at` is UTC; the local fields drive recurrence.
 
     Store UTC for delivery but keep the user's wall-clock time, otherwise a
     daily 07:00 WIB reminder would drift by the UTC offset once a DST-shifting
     zone is involved.
+
+    `monthday` keeps the day the user actually asked for ('tanggal 1' means 1
+    forever). Deriving it from `due_at` instead would ratchet: a 31st reminder
+    clamped to 28 February would stay on the 28th for good.
     """
     if repeat_kind not in REPEAT_KINDS:
         raise ValueError(f"repeat_kind must be one of {REPEAT_KINDS}, got {repeat_kind!r}")
+    if monthday is not None and not 1 <= int(monthday) <= 31:
+        raise ValueError(f"monthday must be 1..31, got {monthday!r}")
     with _cursor() as cur:
         cur.execute(
             """
-            INSERT INTO reminders (user_id, text, repeat_kind, due_at, local_hhmm, weekday)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO reminders
+                (user_id, text, repeat_kind, due_at, local_hhmm, weekday, monthday)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -513,6 +526,7 @@ def add_reminder(
                 due_at.astimezone(UTC).isoformat(timespec="seconds"),
                 local_hhmm,
                 weekday,
+                monthday,
             ),
         )
         return int(cur.lastrowid or 0)

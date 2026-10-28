@@ -120,6 +120,41 @@ def test_weekly_goes_to_next_week_when_it_fires_on_the_matching_day():
     assert got.astimezone(WIB) == datetime(2026, 10, 5, 8, 0, tzinfo=WIB)
 
 
+def _monthly(hhmm: str, monthday: int | None) -> dict:
+    return {"repeat_kind": "monthly", "local_hhmm": hhmm, "weekday": None, "monthday": monthday}
+
+
+def test_monthly_moves_to_the_requested_day_of_the_next_month():
+    """'Tanggal 1' means the 1st, even if the user set it up in late September."""
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    got = next_occurrence(_monthly("09:00", 1), WIB, now)
+    assert got.astimezone(WIB) == datetime(2026, 10, 1, 9, 0, tzinfo=WIB)
+
+
+def test_monthly_rolls_into_the_next_year_after_december():
+    now = datetime(2026, 12, 2, 10, 0, tzinfo=WIB)
+    got = next_occurrence(_monthly("09:00", 1), WIB, now)
+    assert got.astimezone(WIB) == datetime(2027, 1, 1, 9, 0, tzinfo=WIB)
+
+
+def test_monthly_clamps_the_31st_to_the_last_day_of_a_short_month():
+    now = datetime(2027, 1, 31, 10, 0, tzinfo=WIB)
+    got = next_occurrence(_monthly("09:00", 31), WIB, now)
+    assert got.astimezone(WIB) == datetime(2027, 2, 28, 9, 0, tzinfo=WIB)
+
+
+def test_monthly_returns_to_the_31st_after_a_clamped_month():
+    """February must not ratchet a 'tanggal 31' reminder onto the 28th for good."""
+    now = datetime(2027, 2, 28, 10, 0, tzinfo=WIB)
+    got = next_occurrence(_monthly("09:00", 31), WIB, now)
+    assert got.astimezone(WIB) == datetime(2027, 3, 31, 9, 0, tzinfo=WIB)
+
+
+def test_monthly_without_monthday_gives_up_instead_of_looping():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    assert next_occurrence(_monthly("09:00", None), WIB, now) is None
+
+
 # ------------------------------------------------------------- claim/dedup
 
 
@@ -189,6 +224,20 @@ def test_daily_advances_to_tomorrow_and_sends_again_next_day():
     )
     assert len(pending) == 1
     assert len(sender.sent) == 2
+
+
+def test_deliver_advances_a_monthly_reminder_to_the_next_month():
+    first = datetime(2026, 10, 1, 9, 0, tzinfo=WIB)
+    db.add_reminder(OWNER, "jalankan prepaid switching", "monthly", first, "09:00", None, 1)
+    sender = FakeSender()
+
+    assert asyncio.run(deliver_due(sender, now=first)) == 1
+    pending = db.list_reminders(OWNER)
+    assert len(pending) == 1
+    assert pending[0]["monthday"] == 1
+    assert datetime.fromisoformat(pending[0]["due_at"]).astimezone(WIB) == datetime(
+        2026, 11, 1, 9, 0, tzinfo=WIB
+    )
 
 
 def test_send_failure_releases_the_claim_for_retry():
@@ -331,6 +380,12 @@ def test_add_reminder_rejects_an_unknown_repeat_kind():
         db.add_reminder(OWNER, "x", "fortnightly", now, "10:00")
 
 
+def test_add_reminder_rejects_an_impossible_monthday():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    with pytest.raises(ValueError):
+        db.add_reminder(OWNER, "x", "monthly", now, "10:00", None, 32)
+
+
 # ----------------------------------------------------------------- display
 
 
@@ -345,3 +400,12 @@ def test_format_reminder_labels_the_repeat():
     row = db.get_reminder(reminder_id, OWNER)
     assert "setiap hari" in format_reminder(row, WIB)
     assert "kopi" in format_reminder(row, WIB)
+
+
+def test_format_reminder_labels_a_monthly_reminder():
+    now = datetime(2026, 9, 28, 10, 0, tzinfo=WIB)
+    reminder_id = db.add_reminder(
+        OWNER, "prepaid", "monthly", now + timedelta(days=3), "09:00", None, 1
+    )
+    row = db.get_reminder(reminder_id, OWNER)
+    assert "setiap bulan" in format_reminder(row, WIB)

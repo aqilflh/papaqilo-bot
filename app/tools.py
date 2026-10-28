@@ -460,6 +460,7 @@ async def set_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
 
     local_due = due.astimezone(tz)
     weekday = local_due.weekday() if repeat == "weekly" else None
+    monthday = local_due.day if repeat == "monthly" else None
     reminder_id = db.add_reminder(
         ctx.user_id,
         text,
@@ -467,9 +468,15 @@ async def set_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
         due,
         local_due.strftime("%H:%M"),
         weekday,
+        monthday,
     )
 
-    label = {"once": "sekali", "daily": "setiap hari", "weekly": "setiap minggu"}[repeat]
+    label = {
+        "once": "sekali",
+        "daily": "setiap hari",
+        "weekly": "setiap minggu",
+        "monthly": f"setiap tanggal {monthday}",
+    }[repeat]
     suffix = f", {label}" if repeat != "once" else ""
     return (
         f"Pengingat #{reminder_id} dibuat{suffix}: {text}. "
@@ -981,6 +988,7 @@ TOOLS: tuple[Tool, ...] = (
             "Buat pengingat yang akan dikirim ke user pada waktu tertentu. "
             "Pakai saat user minta agar diingatkan, misalnya 'ingetin aku besok "
             "jam 9 pagi meeting' atau 'ingetin tiap hari jam 7 pagi'. "
+            "Untuk pengulangan isi juga `repeat`. "
             "Selalu sebut ulang tanggal dan jam hasil parsing supaya user bisa "
             "memperbaiki kalau salah paham."
         ),
@@ -1003,10 +1011,12 @@ TOOLS: tuple[Tool, ...] = (
                 },
                 "repeat": {
                     "type": "string",
-                    "enum": ["once", "daily", "weekly"],
+                    "enum": ["once", "daily", "weekly", "monthly"],
                     "description": (
                         "'once' untuk sekali, 'daily' untuk setiap hari, 'weekly' "
-                        "untuk hari yang sama tiap minggu. Default 'once'."
+                        "untuk hari yang sama tiap minggu, 'monthly' untuk tanggal "
+                        "yang sama tiap bulan (misalnya 'tiap tanggal 1'). "
+                        "Default 'once'."
                     ),
                 },
             },

@@ -8,6 +8,7 @@ off for three days, and it must still fire exactly once per day afterwards.
 
 from __future__ import annotations
 
+import calendar
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -52,6 +53,7 @@ REPEAT_LABEL = {
     "once": "sekali",
     "daily": "setiap hari",
     "weekly": "setiap minggu",
+    "monthly": "setiap bulan",
 }
 
 
@@ -90,6 +92,24 @@ def next_occurrence(reminder: dict[str, Any], tz: ZoneInfo, now: datetime) -> da
         while candidate <= local_now or candidate.weekday() != weekday:
             candidate += timedelta(days=1)
         return candidate.astimezone(UTC)
+
+    if kind == "monthly":
+        monthday = reminder.get("monthday")
+        if monthday is None:
+            return None
+        year, month = local_now.year, local_now.month
+        # Twelve tries covers a full cycle; the spare two are slack in case the
+        # requested day has just passed twice over a month boundary.
+        for _ in range(14):
+            day = min(int(monthday), calendar.monthrange(year, month)[1])
+            candidate = datetime(year, month, day, hh, mm, tzinfo=tz)
+            if candidate > local_now:
+                return candidate.astimezone(UTC)
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+        return None
 
     return None
 
