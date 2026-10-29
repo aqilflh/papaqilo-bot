@@ -7,7 +7,9 @@ reminders, shift-schedule tracking, and route/ETA monitoring — all scoped per
 user in SQLite.
 
 <p align="center">
-  <img src="docs/bot.jpg" width="340" alt="Papaqilo Bot in Telegram replying with the daily recap: weather, headlines from Hacker News, Antara, CNBC, CNN and Republika, plus a closing note on the dominant theme.">
+  <img src="docs/bot.jpg" width="320" alt="Papaqilo Bot in Telegram replying with the daily recap: weather, headlines from Hacker News, Antara, CNBC, CNN and Republika, plus a closing note on the dominant theme.">
+  &nbsp;&nbsp;
+  <img src="docs/bot-chat.jpg" width="320" alt="Papaqilo Bot answering a plain-Indonesian question about current server status with RAM, container memory, CPU load, uptime, disk usage and database size, followed by route and weather answers.">
 </p>
 
 > The original Indonesian documentation is preserved in
