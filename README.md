@@ -6,6 +6,10 @@ Python 3.12 (async, type-hinted) and powered by an OpenAI-compatible LLM
 reminders, shift-schedule tracking, and route/ETA monitoring — all scoped per
 user in SQLite.
 
+<p align="center">
+  <img src="docs/bot.jpg" width="340" alt="Papaqilo Bot in Telegram replying with the daily recap: weather, headlines from Hacker News, Antara, CNBC, CNN and Republika, plus a closing note on the dominant theme.">
+</p>
+
 > The original Indonesian documentation is preserved in
 > [`docs/README.id.md`](docs/README.id.md). The system design spec is in
 > [`SPEC.md`](SPEC.md) and [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md).
