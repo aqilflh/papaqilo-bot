@@ -22,6 +22,10 @@ user in SQLite.
 - **Shift tracking** — paste an informal Indonesian shift schedule; it is
   parsed in plain code (no LLM), previewed, and saved. Eve-of and
   before-start reminders fire from a per-minute tick.
+  *Note: the parser targets Indonesian medical-clerkship schedules
+  (month/weekday names, `pagi/siang/malam`, places like `igd/klinik/rs`).
+  The token lists live in `app/shift_parser.py` (`DAYS`, `MONTHS`,
+  `TIME_WORDS`, `PLACES`) and are meant to be extended, not edited inline.*
 - **Route manager** — create A→B routes from Telegram Location messages with
   waypoints and alternatives; ETA/distance via Google Routes API.
 - **Voice notes** — local Whisper (faster-whisper) transcription.
@@ -106,6 +110,15 @@ Data lives in `./data` (bind-mounted, gitignored). Backups land in
 - The LLM has no shell, file, or arbitrary-network tools.
 - Treat all tool output (RSS, weather, web text) as untrusted data.
 - Never enable real submission / destructive actions without confirmation.
+
+## Adapting the shift parser
+
+The shift parser is intentionally narrow: it understands Indonesian
+month/weekday names and a small vocabulary of shift kinds and places. If you
+want to use it for a different language or workplace, extend the constants in
+`app/shift_parser.py` (`DAYS`, `MONTHS`, `TIME_WORDS`, `PLACES`) and the
+tests in `tests/test_shift_parser.py`. Keep the parsing deterministic and
+do not route the pasted schedule through the LLM.
 
 ## License
 
