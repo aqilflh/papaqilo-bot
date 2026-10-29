@@ -22,12 +22,11 @@ user in SQLite.
 - **Shift tracking** — paste an informal Indonesian shift schedule; it is
   parsed in plain code (no LLM), previewed, and saved. Eve-of and
   before-start reminders fire from a per-minute tick.
-  *Note: the parser targets Indonesian medical-clerkship schedules
-  (month/weekday names, `pagi/siang/malam`, places like `igd/klinik/rs`).
+  *Note: the parser targets Indonesian rotating-shift schedules
+  (month/weekday names, `pagi/siang/malam`, place words such as `igd/klinik/rs`).
   The token lists live in `app/shift_parser.py` (`DAYS`, `MONTHS`,
   `TIME_WORDS`, `PLACES`) and are meant to be extended, not edited inline.*
-  *Originally built to support a medical clerkship student on rotating
-  shifts — it still works for anyone on a rotating roster.*
+  *Built for a rotating roster; the place vocabulary is easy to replace.*
 - **Route manager** — create A→B routes from Telegram Location messages with
   waypoints and alternatives; ETA/distance via Google Routes API.
 - **Voice notes** — local Whisper (faster-whisper) transcription.
@@ -49,7 +48,7 @@ user in SQLite.
 | RSS | feedparser |
 | Timezones | zoneinfo |
 | Voice | faster-whisper (local, optional) |
-| Tests | pytest, pytest-asyncio, ruff, mypy |
+| Tests | pytest, pytest-asyncio, ruff |
 | Deploy | Docker + Docker Compose |
 
 ## Quick start (local)
@@ -89,14 +88,14 @@ treated as a shift-schedule import.
 pip install -r requirements-dev.txt
 pytest -q
 ruff check .
-mypy app
 ```
 
 The test suite never makes real network calls (mocked clients + fixtures).
 
 ## Deployment
 
-See [`deploy.md`](deploy.md) and the spec. Short version:
+Runs on a single VPS with Docker Compose (host and credential details are kept
+out of this repo). Short version:
 
 ```bash
 docker compose up -d --build

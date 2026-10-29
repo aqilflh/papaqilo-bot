@@ -111,8 +111,13 @@ async def test_async_wrapper_transcribes_off_the_loop(tmp_path):
 
 
 def test_decode_check_reports_a_missing_decoder(monkeypatch):
-    """Local dev has no faster-whisper; that must read as a warning, not a crash."""
-    monkeypatch.delitem(sys.modules, "faster_whisper", raising=False)
+    """A missing faster-whisper must read as a warning, not a crash.
+
+    Setting the entry to None makes the next `import faster_whisper` raise
+    ImportError even when the package is installed, so this test is independent
+    of the machine it runs on.
+    """
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)
     ok, detail = stt.decode_check()
     assert ok is False
     assert "tidak terpasang" in detail
