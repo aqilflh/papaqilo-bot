@@ -26,6 +26,8 @@ user in SQLite.
   (month/weekday names, `pagi/siang/malam`, places like `igd/klinik/rs`).
   The token lists live in `app/shift_parser.py` (`DAYS`, `MONTHS`,
   `TIME_WORDS`, `PLACES`) and are meant to be extended, not edited inline.*
+  *Originally built to support a medical clerkship student on rotating
+  shifts — it still works for anyone on a rotating roster.*
 - **Route manager** — create A→B routes from Telegram Location messages with
   waypoints and alternatives; ETA/distance via Google Routes API.
 - **Voice notes** — local Whisper (faster-whisper) transcription.
